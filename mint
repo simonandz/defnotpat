@@ -853,6 +853,25 @@ for program in $INSTALLED_PROGRAMS; do
     fi
 done
 
+# 32List of hacking tools to check for and remove
+HACKER_TOOLS=("john" "hydra" "nmap" "zenmap" "metasploit" "wireshark" "sqlmap" "aircrack-ng" "ophcrack")
+
+echo "[*] Checking and removing hacking tools..."
+for tool in "${HACKER_TOOLS[@]}"; do
+    if dpkg -l | grep -qw "$tool"; then
+        echo "[*] Removing $tool..."
+        apt remove --purge -y "$tool"
+        if [ $? -eq 0 ]; then
+            echo "[+] $tool removed successfully."
+        else
+            echo "[-] Failed to remove $tool."
+        fi
+    else
+        echo "[+] $tool is not installed."
+    fi
+done
+
+
 # Clean up residual dependencies
 apt autoremove -y
 if [ $? -eq 0 ]; then

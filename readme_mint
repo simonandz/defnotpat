@@ -1,3 +1,14 @@
+1st Thing!!!!
+1. Copy and paste read me file into an email to send
+2. Send it to pc and then ask chatgpt to change the script below based on the requirements
+3. Send the script back through email
+4. Run This Script (sudo (path directory))
+5. Check error + resolve them
+6. Check for other unnecessary apps/hacking software
+8. If necessary, also check for insecure ports/unusual data
+9. IF we do not get a point for disabling services after we run the script, look manually at services and disable suspicious ones
+
+
 1. Delete Unauthorized Users
 Purpose: To minimize potential security risks by removing users who should not have access to the system.
 Functionality:
@@ -229,6 +240,8 @@ Iterates through each installed program.
 Checks if the program is not in the AUTHORIZED_PROGRAMS list.
 If unauthorized, removes the program using apt purge -y.
 Logging: Logs the removal status of each unauthorized program or notes if a program wasn't installed.
+
+32. removes hacking tools
 
 
 
