@@ -13,7 +13,7 @@
 # ------------------------------
 
 # Logging Configuration
-LOGFILE="/var/log/cyberpatriots_hardening.log"
+LOGFILE="../cyberpatriots_hardening.log"
 exec > >(tee -a "$LOGFILE") 2>&1
 
 # Define authorized users (retain these users on the system)

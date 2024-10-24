@@ -1,0 +1,337 @@
+1. Delete Unauthorized Users
+Purpose: To minimize potential security risks by removing users who should not have access to the system.
+Functionality:
+Iterates through all system users listed in /etc/passwd.
+Checks if each user is not in the AUTHORIZED_USERS array.
+For users with a UID ≥ 1000 (excluding nobody), the script deletes the user and their home directory using userdel -r.
+Logging: Records successful deletions or logs failures if a user cannot be deleted.
+2. Configure Administrator Privileges
+Purpose: To ensure that only authorized users have administrative (sudo) privileges.
+Functionality:
+Removing Unauthorized Sudo Users:
+Iterates through users in the sudo group.
+Removes users not listed in the ADMINISTRATORS array using deluser.
+Adding Authorized Administrators to Sudo Group:
+Adds each user in the ADMINISTRATORS array to the sudo group using usermod -aG sudo.
+Logging: Confirms additions and removals of sudo privileges or logs any issues encountered.
+3. Set User Shells as per USERS_AUTHORIZED
+Purpose: To restrict login capabilities of certain users by assigning non-interactive shells.
+Functionality:
+Iterates through each user defined in the USERS_AUTHORIZED associative array.
+Checks if the user's current shell matches the authorized shell.
+If mismatched, changes the shell using usermod -s.
+Sets restrictive permissions (chmod 755) on user home directories to secure them.
+Logging: Logs successful shell changes, permission settings, or any failures.
+4. Manage Group Memberships as per GROUPS_AUTHORIZED
+Purpose: To enforce strict group-based access controls by ensuring only authorized members are part of specific groups.
+Functionality:
+Iterates through each group defined in the GROUPS_AUTHORIZED associative array.
+Removing Unauthorized Members:
+Identifies current group members not listed as authorized.
+Removes these users from the group using deluser.
+Adding Authorized Members:
+Adds authorized users to the respective groups using usermod -aG.
+Logging: Records the removal and addition of group members or logs any issues encountered.
+5. Enable and Update Firewall (UFW)
+Purpose: To protect the system from unauthorized network access by configuring the Uncomplicated Firewall (UFW).
+Functionality:
+Installation:
+Checks if UFW is installed; if not, installs it using apt install -y ufw.
+Activation:
+Enables UFW with ufw --force enable.
+Logging: Confirms successful installation and activation of UFW or logs any failures.
+6. Allow OpenSSH through the Firewall
+Purpose: To permit SSH traffic through the firewall, allowing secure remote access.
+Functionality:
+Configures UFW to allow SSH traffic using ufw allow OpenSSH.
+Logging: Logs the success or failure of allowing SSH through UFW.
+7. Enable UFW Logging
+Purpose: To monitor firewall activities for security auditing and troubleshooting.
+Functionality:
+Enables logging in UFW with ufw logging on.
+Logging: Confirms the activation of UFW logging or logs any issues.
+8. Enable Automatic Updates and Check for Updates Daily
+Purpose: To keep the system up-to-date with the latest security patches and updates automatically.
+Functionality:
+Installation:
+Installs unattended-upgrades if not already present.
+Configuration:
+Configures unattended-upgrades using dpkg-reconfigure --priority=low unattended-upgrades.
+Writes configuration directives to /etc/apt/apt.conf.d/10periodic to schedule daily package list updates, downloads, and automatic cleanups.
+Logging: Logs the installation and configuration steps or any failures.
+9. Upgrade All Packages
+Purpose: To ensure that all installed packages are updated to their latest versions, incorporating security fixes.
+Functionality:
+Executes apt update && apt upgrade -y to refresh package lists and upgrade all packages.
+Logging: Confirms successful upgrades or logs any issues encountered during the process.
+10. Enable Automatic Reboots for Security Updates
+Purpose: To apply critical security updates that require a system reboot automatically.
+Functionality:
+Writes configuration directives to /etc/apt/apt.conf.d/50unattended-upgrades to enable automatic reboots after applying security updates, specifying a reboot time (e.g., 02:00 AM).
+Logging: Logs the success or failure of configuring automatic reboots.
+11. Remove Specified Media Files
+Purpose: To clean the system by deleting unnecessary media files, reducing clutter and potential data leakage.
+Functionality:
+Iterates through file patterns defined in the FILE_TYPES_TO_REMOVE array (e.g., *.mp3, *.avi).
+Deletes matching files across the filesystem using find and rm.
+Logging: Records the removal of files matching each pattern or logs any issues encountered.
+12. Update Password Requirements
+Purpose: To enforce strong password policies, enhancing account security.
+Functionality:
+Installation:
+Installs libpam-pwquality if not already installed to enforce password quality standards.
+Configuration:
+Writes the PASSWORD_STRENGTH_CONTENT to the PAM configuration file (/etc/pam.d/common-password) to enforce password complexity, history, and strength.
+Sets restrictive permissions (chmod 600) on the PAM configuration file to prevent unauthorized access.
+Logging: Logs successful installation, configuration changes, and permission settings or any failures.
+13. Configure Account Lockout
+Purpose: To protect against brute-force attacks by locking out accounts after a defined number of failed login attempts.
+Functionality:
+Writes the ACCOUNT_LOCKOUT_CONTENT to the PAM configuration file (/etc/pam.d/common-auth) to implement account lockout mechanisms.
+Sets restrictive permissions (chmod 600) on the PAM configuration file.
+Logging: Confirms successful configuration of account lockout settings or logs any issues encountered.
+14. Configure Password Aging in /etc/login.defs
+Purpose: To enforce periodic password changes, ensuring that passwords are regularly updated for enhanced security.
+Functionality:
+Modifies /etc/login.defs using sed to set password aging parameters:
+PASS_MAX_DAYS: Maximum number of days a password can be used.
+PASS_MIN_DAYS: Minimum number of days between password changes.
+PASS_WARN_AGE: Days before password expiration to warn the user.
+Logging: Logs the success or failure of each configuration change.
+15. Apply SSH Configuration
+Purpose: To secure SSH access by configuring the SSH daemon with hardened settings.
+Functionality:
+Writes the SSH_CONFIG_CONTENT to the SSH daemon configuration file (/etc/ssh/sshd_config), setting parameters such as:
+Port: Changes the default SSH port to a non-standard port (e.g., 2222) to reduce exposure to automated attacks.
+UsePAM: Enables PAM authentication.
+X11Forwarding: Enables or disables X11 forwarding.
+PrintMotd: Disables the message of the day.
+AcceptEnv: Restricts accepted environment variables.
+ChallengeResponseAuthentication: Disables challenge-response authentication for enhanced security.
+Sets restrictive permissions (chmod 600) on the SSH configuration file.
+Logging: Logs successful updates to the SSH configuration or any failures.
+16. Restart SSH Service to Apply Changes
+Purpose: To apply the newly configured SSH settings by restarting the SSH service.
+Functionality:
+Checks if the SSH service is active.
+If active, restarts it using systemctl restart ssh.
+If not active, starts the SSH service using systemctl start ssh.
+Logging: Confirms successful restarts or logs any issues encountered.
+17. Delete ophcrack
+Purpose: To remove ophcrack, a password cracking tool, thereby reducing potential security vulnerabilities.
+Functionality:
+Checks if ophcrack is installed.
+If installed, removes it using apt remove --purge -y ophcrack.
+Cleans up residual dependencies with apt autoremove -y.
+Logging: Logs the removal status of ophcrack or notes if it wasn't installed.
+18. Remove Unnecessary Packages
+Purpose: To minimize the system's attack surface by purging unnecessary or potentially insecure packages.
+Functionality:
+Defines an array UNNECESSARY_PACKAGES containing patterns of packages deemed unnecessary (e.g., libreoffice*, thunderbird*, gnome-games*).
+Iterates through each package pattern and purges them using apt purge -y.
+Cleans up residual dependencies with apt autoremove -y.
+Logging: Records the removal status of each package or logs any issues encountered.
+19. Disable avahi-daemon
+Purpose: To disable the avahi-daemon, which facilitates service discovery on a local network, reducing potential network vulnerabilities.
+Functionality:
+Checks if avahi-daemon is enabled.
+If enabled, disables and stops it using systemctl disable --now avahi-daemon.
+If already disabled, notes its status.
+Logging: Confirms successful disabling or logs any issues.
+20. Disable Apache2 Service
+Purpose: To disable the Apache2 web server service if it's not required, minimizing unnecessary running services.
+Functionality:
+Checks if apache2 is enabled.
+If enabled, disables and stops it using systemctl disable --now apache2.
+If already disabled, notes its status.
+Logging: Logs the disabling status or any issues encountered.
+21. Disable Nginx Service
+Purpose: To disable the Nginx web server service if it's not required, further reducing the system's attack surface.
+Functionality:
+Checks if nginx is enabled.
+If enabled, disables and stops it using systemctl disable --now nginx.
+If already disabled, notes its status.
+Logging: Confirms successful disabling or logs any issues.
+22. Disable FTP Services if Installed
+Purpose: To disable any installed FTP services, preventing unauthorized file transfers and potential security breaches.
+Functionality:
+Defines an array FTP_SERVICES containing common FTP services (vsftpd, proftpd, pure-ftpd).
+Iterates through each service and checks if it's active.
+If active, disables and stops the service using systemctl disable --now.
+If not active or not installed, notes its status.
+Logging: Records the disabling status of each FTP service or logs any issues encountered.
+23. Install and Configure Fail2Ban
+Purpose: To protect the system against brute-force attacks by monitoring log files and banning IPs that exhibit malicious behavior.
+Functionality:
+Installation:
+Checks if fail2ban is installed; if not, installs it using apt install -y fail2ban.
+Configuration:
+Writes custom configurations to /etc/fail2ban/jail.local to monitor SSH login attempts, specifying parameters such as bantime, findtime, and maxretry.
+Service Management:
+Restarts and enables the fail2ban service to apply the new configurations.
+Logging: Logs the installation, configuration, and service management statuses or any issues encountered.
+24. Disable USB Storage (Optional)
+Purpose: To prevent data exfiltration and unauthorized use of USB storage devices by disabling USB storage support.
+Functionality:
+Writes install usb-storage /bin/true to /etc/modprobe.d/usb-storage.conf to disable the USB storage module.
+Updates the initial RAM filesystem using update-initramfs -u to apply the changes.
+Logging: Confirms the successful disabling of USB storage and the update of initramfs or logs any failures.
+25. Restrict Access to Root Directory
+Purpose: To secure the root directory by restricting its access exclusively to the root user.
+Functionality:
+Sets the permissions of the /root directory to 700 using chmod 700 /root, ensuring that only the root user can access it.
+Logging: Logs the success or failure of the permission change.
+26. Install and Configure Auditd
+Purpose: To monitor and log critical system events, aiding in the detection of unauthorized activities and system anomalies.
+Functionality:
+Installation:
+Checks if auditd is installed; if not, installs it along with its plugins (audispd-plugins) using apt install -y auditd audispd-plugins.
+Service Management:
+Starts the auditd service using systemctl start auditd.
+Enables the auditd service to start on boot using systemctl enable auditd.
+Logging: Records the installation and service management statuses or logs any issues encountered.
+27. Configure Audit Rules
+Purpose: To define specific rules that determine which system events are logged by auditd.
+Functionality:
+Writes audit rules to /etc/audit/rules.d/audit.rules to monitor changes to critical files such as:
+/etc/passwd
+/etc/shadow
+/etc/ssh/sshd_config
+/var/log/auth.log
+Restarts the auditd service using systemctl restart auditd to apply the new rules.
+Logging: Confirms successful configuration of audit rules and the restart of the auditd service or logs any issues.
+28. Install and Configure Logwatch
+Purpose: To provide daily summaries of system logs, facilitating ongoing monitoring and quick identification of potential security issues.
+Functionality:
+Installation:
+Checks if logwatch is installed; if not, installs it using apt install -y logwatch.
+Configuration:
+Modifies logwatch.conf to:
+Set Output to mail instead of stdout.
+Update MailTo to a specified email address (your_email@example.com) to receive daily reports.
+Set Detail level to High for comprehensive log summaries.
+Logging: Logs the installation and configuration statuses or any issues encountered.
+29. Fetch List of Authorized Programs from the Manifest
+Purpose: To retrieve an up-to-date list of authorized programs from a remote manifest, ensuring compliance with the principle of least privilege.
+Functionality:
+Downloads the manifest file from the specified AUTHORIZED_PROGRAMS_URL using wget.
+Extracts the list of authorized program names using awk.
+Logging: Confirms successful retrieval of the authorized programs list or logs any failures.
+30. Get Currently Installed Programs
+Purpose: To identify all programs currently installed on the system for comparison against the authorized list.
+Functionality:
+Retrieves the list of installed programs using apt list --installed and extracts their names.
+Logging: Logs the successful retrieval of the installed programs list or any issues encountered.
+31. Remove Unauthorized Programs
+Purpose: To enforce the removal of programs that are not listed as authorized, thereby reducing the system's attack surface.
+Functionality:
+Iterates through each installed program.
+Checks if the program is not in the AUTHORIZED_PROGRAMS list.
+If unauthorized, removes the program using apt purge -y.
+Logging: Logs the removal status of each unauthorized program or notes if a program wasn't installed.
+
+
+
+Automated Testing
+Note: Although not part of the original 1-31 steps, the script includes an Automated Testing section to verify the effectiveness of the security hardening measures. Here's a breakdown aligned with the script's structure:
+Initiating Automated Testing
+Purpose: To automatically verify that each security measure has been correctly applied and is functioning as intended.
+Functionality:
+Unauthorized Users Deletion:
+Checks if any unauthorized users (not in AUTHORIZED_USERS and with UID ≥ 1000) still exist on the system.
+Logs a failure if such users are found.
+UFW Status:
+Verifies if UFW is active by checking its status.
+Logs a success if active; otherwise, logs a failure.
+SSH Port Configuration:
+Confirms that the SSH port is correctly set to the desired SSH_PORT.
+Logs a success if correctly set; otherwise, logs a failure.
+Fail2Ban Status:
+Checks if Fail2Ban is active and running.
+Logs a success if active; otherwise, logs a failure.
+Auditd Status:
+Verifies if auditd is active and monitoring.
+Logs a success if active; otherwise, logs a failure.
+Logwatch Installation:
+Confirms if Logwatch is installed.
+Logs a success if installed; otherwise, logs a failure.
+Unauthorized Programs Removal:
+Ensures that no unauthorized programs (not in AUTHORIZED_PROGRAMS) remain installed.
+Logs a success for each unauthorized program not found; otherwise, logs a failure.
+Logging: Provides immediate feedback on the status of each test, aiding in the quick identification and resolution of any issues.
+Final Steps
+Purpose: To signify the completion of the security hardening process.
+Functionality:
+Prints a success message indicating that the CyberPatriots Security Hardening process has been completed successfully.
+Logging: Confirms the successful execution of the entire script.
+Summary of Functionalities
+User and Permissions Management:
+
+Deletes unauthorized users to minimize potential attack vectors.
+Manages administrative privileges, ensuring only authorized users have sudo access.
+Restricts user shells to prevent unauthorized logins.
+Manages group memberships to enforce strict group-based access controls.
+Firewall Configuration:
+
+Installs and configures UFW to manage incoming and outgoing traffic.
+Allows SSH traffic through the firewall.
+Enables firewall logging for monitoring purposes.
+System Updates and Upgrades:
+
+Enables automatic updates to keep the system secure with the latest patches.
+Configures automatic reboots after security updates to ensure changes take effect.
+File Management:
+
+Removes specified media files to clean up the system and remove unnecessary data.
+Password Policy Enforcement:
+
+Enforces strong password policies to enhance account security.
+Implements account lockout mechanisms to protect against brute-force attacks.
+Configures password aging policies to require periodic password changes.
+SSH Configuration:
+
+Secures SSH settings, including changing the default port and disabling less secure authentication methods.
+Ensures the SSH service is running with the updated configurations.
+Package Management:
+
+Removes unnecessary or insecure packages to reduce the system's attack surface.
+Cleans up residual dependencies to maintain system integrity.
+Service Configuration:
+
+Disables unnecessary services to minimize potential vulnerabilities.
+Installs and configures Fail2Ban to protect against unauthorized access attempts.
+Optionally disables USB storage to prevent data exfiltration via USB devices.
+Restricts access to the root directory to secure sensitive system files.
+Audit and Monitoring:
+
+Installs and configures auditd to monitor critical system events.
+Sets up audit rules to track changes to important files.
+Installs and configures Logwatch to receive daily log reports for ongoing monitoring.
+Program Authorization:
+
+Ensures only authorized programs are installed based on a predefined manifest, adhering to the principle of least privilege.
+Automated Testing:
+
+Verifies the effectiveness of security measures through a series of automated checks, providing immediate feedback on the system's security status.
+Final Steps:
+
+Concludes the script's execution with a confirmation message, ensuring the user is aware of the completion.
+Additional Notes and Best Practices
+Email Configuration for Logwatch:
+
+Action Required: Replace your_email@example.com in the Logwatch configuration section with a valid email address to receive daily log reports.
+SSH Port Selection:
+
+Recommendation: Choose an SSH port number that does not conflict with other services and is not easily guessable to enhance security.
+Testing Environment:
+
+Recommendation: Before deploying the script in a competition or production environment, test it in a controlled setting (e.g., a virtual machine) to ensure it behaves as expected without causing unintended disruptions.
+Backup Critical Data:
+
+Note: Although not included in this version of the script, it's crucial to back up important data and configuration files before making system-wide changes.
+Regular Audits and Updates:
+
+Recommendation: Periodically review and update the script to adapt to new security threats and ensure continued compliance with competition requirements.
+Extensibility:
+
+Potential Enhancements: Consider integrating additional security measures such as SELinux/AppArmor, two-factor authentication, or intrusion detection systems for an even more robust security posture.
