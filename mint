@@ -9,129 +9,43 @@
 # ==================================================
 
 # ------------------------------
+# Ensure the script is run as root
+# ------------------------------
+if [[ $EUID -ne 0 ]]; then
+   echo "[-] This script must be run as root. Use sudo." 
+   exit 1
+fi
+
+echo "[+] Starting CyberPatriots Security Hardening Script..."
+
+# ------------------------------
 # Configuration Variables
 # ------------------------------
 
 # Logging Configuration
-LOGFILE="../cyberpatriots_hardening.log"
+LOGFILE="/var/log/cyberpatriots_hardening.log"
 exec > >(tee -a "$LOGFILE") 2>&1
 
 # Define authorized users (retain these users on the system)
-AUTHORIZED_USERS=("root" "your_username")  # Replace 'your_username' with actual usernames
+AUTHORIZED_USERS=("your_username")  # Replace 'your_username' with actual usernames
 
 # Define administrators (users with sudo privileges)
-ADMINISTRATORS=("root" "admin_username")  # Replace 'admin_username' with actual admin usernames
+ADMINISTRATORS=("admin_username")  # Replace 'admin_username' with actual admin usernames
 
 # Define group authorizations (group: authorized members)
 declare -A GROUPS_AUTHORIZED=(
-    ["root"]=""
-    ["daemon"]=""
-    ["bin"]=""
-    ["sys"]=""
     ["adm"]="syslog"
-    ["tty"]=""
-    ["disk"]=""
-    ["lp"]=""
-    ["mail"]=""
-    ["news"]=""
-    ["uucp"]=""
-    ["man"]=""
-    ["proxy"]=""
-    ["kmem"]=""
-    ["dialout"]=""
-    ["fax"]=""
-    ["voice"]=""
-    ["cdrom"]=""
-    ["floppy"]=""
-    ["tape"]=""
-    ["sudo"]=""
-    ["audio"]="pulse"
-    ["dip"]=""
-    ["www-data"]=""
-    ["backup"]=""
-    ["operator"]=""
-    ["list"]=""
-    ["irc"]=""
-    ["src"]=""
-    ["gnats"]=""
-    ["shadow"]=""
-    ["utmp"]=""
-    ["video"]=""
-    ["sasl"]=""
-    ["plugdev"]=""
-    ["staff"]=""
-    ["games"]=""
-    ["users"]=""
-    ["nogroup"]=""
-    ["systemd-journal"]=""
-    ["systemd-network"]=""
-    ["systemd-resolve"]=""
-    ["input"]=""
-    ["crontab"]=""
-    ["syslog"]=""
-    ["messagebus"]=""
-    ["netdev"]=""
-    ["mlocate"]=""
-    ["ssl-cert"]=""
-    ["uuidd"]=""
-    ["avahi-autoipd"]=""
-    ["bluetooth"]=""
-    ["rtkit"]=""
-    ["ssh"]=""
-    ["lpadmin"]=""
-    ["whoopsie"]=""
-    ["scanner"]="saned"
-    ["saned"]=""
-    ["pulse"]=""
-    ["pulse-access"]=""
-    ["avahi"]=""
-    ["colord"]=""
-    ["geoclue"]=""
-    ["gdm"]=""
-    ["sambashare"]=""
+    ["sudo"]="admin_username"  # Replace 'admin_username' with actual admin usernames
+    # Add other groups as needed
 )
 
 # Define users with specific shells (restrict login capabilities)
 declare -A USERS_AUTHORIZED=(
-    ["root"]="/bin/false"
     ["daemon"]="/usr/sbin/nologin"
     ["bin"]="/usr/sbin/nologin"
     ["sys"]="/usr/sbin/nologin"
-    ["sync"]="/bin/sync"
-    ["games"]="/usr/sbin/nologin"
-    ["man"]="/usr/sbin/nologin"
-    ["lp"]="/usr/sbin/nologin"
-    ["mail"]="/usr/sbin/nologin"
-    ["news"]="/usr/sbin/nologin"
-    ["uucp"]="/usr/sbin/nologin"
-    ["proxy"]="/usr/sbin/nologin"
-    ["www-data"]="/usr/sbin/nologin"
-    ["backup"]="/usr/sbin/nologin"
-    ["list"]="/usr/sbin/nologin"
-    ["irc"]="/usr/sbin/nologin"
-    ["gnats"]="/usr/sbin/nologin"
-    ["nobody"]="/usr/sbin/nologin"
-    ["systemd-network"]="/usr/sbin/nologin"
-    ["systemd-resolve"]="/usr/sbin/nologin"
-    ["syslog"]="/usr/sbin/nologin"
-    ["messagebus"]="/usr/sbin/nologin"
-    ["_apt"]="/usr/sbin/nologin"
-    ["uuidd"]="/usr/sbin/nologin"
-    ["avahi-autoipd"]="/usr/sbin/nologin"
-    ["usbmux"]="/usr/sbin/nologin"
-    ["dnsmasq"]="/usr/sbin/nologin"
-    ["rtkit"]="/usr/sbin/nologin"
-    ["speech-dispatcher"]="/bin/false"
-    ["whoopsie"]="/bin/false"
-    ["kernoops"]="/usr/sbin/nologin"
-    ["saned"]="/usr/sbin/nologin"
-    ["pulse"]="/usr/sbin/nologin"
-    ["avahi"]="/usr/sbin/nologin"
-    ["colord"]="/usr/sbin/nologin"
-    ["hplip"]="/bin/false"
-    ["geoclue"]="/usr/sbin/nologin"
-    ["gnome-initial-setup"]="/bin/false"
-    ["gdm"]="/bin/false"
+    # Do not change root's shell
+    # Add other system users as needed
 )
 
 # Disable guest access via LightDM
@@ -156,55 +70,21 @@ PASS_WARN_AGE=7            # Days before password expiration to warn the user
 ACCOUNT_LOCKOUT_CONFIG='/etc/pam.d/common-auth'
 ACCOUNT_LOCKOUT_CONTENT=(
     "# Authentication settings common to all services"
-    "auth\t[success=1 default=ignore]\tpam_unix.so nullok_secure"
-    "auth\trequisite\t\t\tpam_deny.so"
-    "auth\trequired\t\t\tpam_permit.so"
-    "auth  required  pam_tally2.so deny=5 onerr=fail unlock_time=1800"
+    "auth    required    pam_tally2.so deny=5 onerr=fail unlock_time=1800"
 )
 
 # Password Strength Configuration
 PASSWORD_STRENGTH='/etc/pam.d/common-password'
-PASSWORD_STRENGTH_CONTENT=(
-    "# Password-related modules common to all services"
-    "password\trequisite\t\t\tpam_cracklib.so retry=3 minlen=$MIN_PASS_LENGTH difok=3 $PASSWORD_COMPLEXITY"
-    "password\t[success=1 default=ignore]\tpam_unix.so obscure use_authtok try_first_pass sha512 remember=5 minlen=$MIN_PASS_LENGTH"
-    "password\trequisite\t\t\tpam_deny.so"
-    "password\trequired\t\t\tpam_permit.so"
-    "password\toptional\tpam_gnome_keyring.so "
-)
 
 # SSH Configuration
 SSH_CONFIG='/etc/ssh/sshd_config'
 SSH_PORT=2222  # Set your desired SSH port (e.g., 2222)
-SSH_CONFIG_CONTENT=(
-    "# SSH Server Configuration"
-    "Port $SSH_PORT"
-    "UsePAM yes"
-    "X11Forwarding yes"
-    "PrintMotd no"
-    "AcceptEnv LANG LC_*"
-    "Subsystem\tsftp\t/usr/lib/openssh/sftp-server"
-    "ChallengeResponseAuthentication no"
-)
-
-# Programs Authorization
-AUTHORIZED_PROGRAMS_URL='http://releases.ubuntu.com/18.04/ubuntu-18.04.1-desktop-amd64.manifest'
-PROGRAMS_COMMAND='apt list --installed | cut -d/ -f1'
-ADD_PROGRAM_COMMAND=('apt' 'install')
-REMOVE_PROGRAM_COMMAND=('apt' 'purge')
 
 # File Types to Remove
 FILE_TYPES_TO_REMOVE=("*.mp3" "*.avi" "*.mkv" "*.mp4" "*.m4a" "*.flac")
 
-# ------------------------------
-# Ensure the script is run as root
-# ------------------------------
-if [[ $EUID -ne 0 ]]; then
-   echo "[-] This script must be run as root. Use sudo." 
-   exit 1
-fi
-
-echo "[+] Starting CyberPatriots Security Hardening Script..."
+# Hacking Tools to Remove
+HACKER_TOOLS=("john" "hydra" "nmap" "zenmap" "metasploit" "wireshark" "sqlmap" "aircrack-ng" "ophcrack")
 
 # ------------------------------
 # User and Permissions Management
@@ -213,7 +93,7 @@ echo "[*] Managing users and permissions..."
 
 # 1. Delete Unauthorized Users
 echo "[*] Deleting unauthorized users..."
-for user in $(cut -f1 -d: /etc/passwd); do
+for user in $(awk -F: '{ print $1 }' /etc/passwd); do
     if [[ ! " ${AUTHORIZED_USERS[@]} " =~ " ${user} " ]]; then
         USER_ID=$(id -u "$user" 2>/dev/null)
         if [[ $? -ne 0 ]]; then
@@ -221,12 +101,17 @@ for user in $(cut -f1 -d: /etc/passwd); do
             continue
         fi
         if [ "$USER_ID" -ge 1000 ] && [ "$user" != "nobody" ]; then
-            echo "[*] Deleting user: $user"
-            userdel -r "$user" &>/dev/null
-            if [ $? -eq 0 ]; then
-                echo "[+] User '$user' deleted successfully."
+            echo "[*] Considering deletion of user: $user"
+            read -p "Do you want to delete user '$user'? (y/n): " confirm
+            if [[ "$confirm" == "y" ]]; then
+                userdel -r "$user" &>/dev/null
+                if [ $? -eq 0 ]; then
+                    echo "[+] User '$user' deleted successfully."
+                else
+                    echo "[-] Failed to delete user '$user' or user does not exist."
+                fi
             else
-                echo "[-] Failed to delete user '$user' or user does not exist."
+                echo "[*] Skipping deletion of user '$user'."
             fi
         fi
     fi
@@ -285,10 +170,11 @@ for user in "${!USERS_AUTHORIZED[@]}"; do
         else
             echo "[+] User '$user' already has the desired shell."
         fi
-        # Secure the shell configuration
-        chmod 755 "$(getent passwd "$user" | cut -d: -f6)"
+        # Secure the home directory
+        user_home=$(getent passwd "$user" | cut -d: -f6)
+        chmod 700 "$user_home"
         if [ $? -eq 0 ]; then
-            echo "[+] Permissions for home directory of '$user' set to 755."
+            echo "[+] Permissions for home directory of '$user' set to 700."
         else
             echo "[-] Failed to set permissions for home directory of '$user'."
         fi
@@ -302,11 +188,11 @@ echo "[*] Managing group memberships as per authorized configurations..."
 for group in "${!GROUPS_AUTHORIZED[@]}"; do
     authorized_members=${GROUPS_AUTHORIZED[$group]}
     IFS=',' read -ra AUTH_MEMBERS <<< "$authorized_members"
-    
+
     # Get current members
     current_members=$(getent group "$group" | awk -F: '{print $4}')
     IFS=',' read -ra CURRENT_MEMBERS_ARRAY <<< "$current_members"
-    
+
     # Remove unauthorized members
     for member in "${CURRENT_MEMBERS_ARRAY[@]}"; do
         if [[ -n "$member" && ! " ${AUTH_MEMBERS[@]} " =~ " ${member} " ]]; then
@@ -319,7 +205,7 @@ for group in "${!GROUPS_AUTHORIZED[@]}"; do
             fi
         fi
     done
-    
+
     # Add authorized members
     for authorized_member in "${AUTH_MEMBERS[@]}"; do
         if [[ -n "$authorized_member" ]]; then
@@ -381,14 +267,17 @@ else
     echo "[-] Failed to enable UFW."
 fi
 
-# 6. Allow OpenSSH through the Firewall
-echo "[*] Allowing OpenSSH through UFW..."
-ufw allow OpenSSH
+# 6. Allow SSH through the Firewall
+echo "[*] Configuring UFW to allow SSH on port $SSH_PORT..."
+ufw allow "$SSH_PORT"/tcp
 if [ $? -eq 0 ]; then
-    echo "[+] OpenSSH allowed through UFW."
+    echo "[+] SSH port $SSH_PORT allowed through UFW."
 else
-    echo "[-] Failed to allow OpenSSH through UFW."
+    echo "[-] Failed to allow SSH port $SSH_PORT through UFW."
 fi
+
+# Remove default SSH rule if exists
+ufw delete allow OpenSSH &>/dev/null
 
 # 7. Enable UFW Logging
 echo "[*] Enabling UFW logging..."
@@ -464,19 +353,27 @@ fi
 # ------------------------------
 # File Management
 # ------------------------------
-echo "[*] Removing non-work-related files..."
+echo "[*] Managing files..."
 
 # 11. Remove Specified Media Files
 echo "[*] Deleting specified media files..."
 for pattern in "${FILE_TYPES_TO_REMOVE[@]}"; do
-    find / -type f -iname "$pattern" -exec rm -f {} \; 2>/dev/null
-    if [ $? -eq 0 ]; then
-        echo "[+] Files matching '$pattern' removed successfully."
-    else
-        echo "[-] Failed to remove files matching '$pattern'."
-    fi
+    echo "[*] Finding files matching '$pattern'..."
+    find /home /root -type f -iname "$pattern" 2>/dev/null | while read -r file; do
+        echo "[*] Found file: $file"
+        read -p "Do you want to delete '$file'? (y/n): " confirm
+        if [[ "$confirm" == "y" ]]; then
+            rm -f "$file"
+            if [ $? -eq 0 ]; then
+                echo "[+] File '$file' deleted successfully."
+            else
+                echo "[-] Failed to delete file '$file'."
+            fi
+        else
+            echo "[*] Skipping deletion of file '$file'."
+        fi
+    done
 done
-echo "[+] Specified media files removed successfully."
 
 # ------------------------------
 # Password Policy Enforcement
@@ -498,39 +395,40 @@ else
 fi
 
 echo "[*] Configuring password strength requirements..."
-printf "%s\n" "${PASSWORD_STRENGTH_CONTENT[@]}" > "$PASSWORD_STRENGTH"
+
+# Backup the original file
+cp "$PASSWORD_STRENGTH" "$PASSWORD_STRENGTH.bak"
+
+# Modify specific settings using sed
+sed -i "/pam_unix.so/ s/$/ minlen=$MIN_PASS_LENGTH remember=5/" "$PASSWORD_STRENGTH"
+sed -i "/pam_pwquality.so/ s/retry=3/retry=3 minlen=$MIN_PASS_LENGTH difok=3 $PASSWORD_COMPLEXITY/" "$PASSWORD_STRENGTH"
+
 if [ $? -eq 0 ]; then
     echo "[+] Password strength requirements updated successfully."
-    chmod 600 "$PASSWORD_STRENGTH"
-    if [ $? -eq 0 ]; then
-        echo "[+] Permissions for '$PASSWORD_STRENGTH' set to 600."
-    else
-        echo "[-] Failed to set permissions for '$PASSWORD_STRENGTH'."
-    fi
 else
     echo "[-] Failed to update password strength requirements."
 fi
 
 # 13. Configure Account Lockout
 echo "[*] Configuring account lockout settings..."
-printf "%s\n" "${ACCOUNT_LOCKOUT_CONTENT[@]}" > "$ACCOUNT_LOCKOUT_CONFIG"
+# Backup the original file
+cp "$ACCOUNT_LOCKOUT_CONFIG" "$ACCOUNT_LOCKOUT_CONFIG.bak"
+
+# Add the account lockout line if not already present
+grep -q "pam_tally2.so" "$ACCOUNT_LOCKOUT_CONFIG" || echo "auth required pam_tally2.so deny=5 onerr=fail unlock_time=1800" >> "$ACCOUNT_LOCKOUT_CONFIG"
+
 if [ $? -eq 0 ]; then
     echo "[+] Account lockout settings configured successfully."
-    chmod 600 "$ACCOUNT_LOCKOUT_CONFIG"
-    if [ $? -eq 0 ]; then
-        echo "[+] Permissions for '$ACCOUNT_LOCKOUT_CONFIG' set to 600."
-    else
-        echo "[-] Failed to set permissions for '$ACCOUNT_LOCKOUT_CONFIG'."
-    fi
 else
     echo "[-] Failed to configure account lockout settings."
 fi
 
 # 14. Configure Password Aging in /etc/login.defs
 echo "[*] Configuring password aging settings in /etc/login.defs..."
-sed -i "s/^PASS_MAX_DAYS\s\+.*/PASS_MAX_DAYS\t$PASS_MAX_DAYS/" /etc/login.defs
-sed -i "s/^PASS_MIN_DAYS\s\+.*/PASS_MIN_DAYS\t$PASS_MIN_DAYS/" /etc/login.defs
-sed -i "s/^PASS_WARN_AGE\s\+.*/PASS_WARN_AGE\t$PASS_WARN_AGE/" /etc/login.defs
+sed -i.bak -E "s/^(PASS_MAX_DAYS\s+)([0-9]+)/\1$PASS_MAX_DAYS/" /etc/login.defs
+sed -i -E "s/^(PASS_MIN_DAYS\s+)([0-9]+)/\1$PASS_MIN_DAYS/" /etc/login.defs
+sed -i -E "s/^(PASS_WARN_AGE\s+)([0-9]+)/\1$PASS_WARN_AGE/" /etc/login.defs
+
 if [ $? -eq 0 ]; then
     echo "[+] Password aging settings updated successfully."
 else
@@ -543,16 +441,24 @@ fi
 echo "[*] Configuring SSH..."
 
 # 15. Apply SSH Configuration
-echo "[*] Writing SSH configuration to $SSH_CONFIG"
-printf "%s\n" "${SSH_CONFIG_CONTENT[@]}" > "$SSH_CONFIG"
+echo "[*] Backing up SSH configuration..."
+cp "$SSH_CONFIG" "$SSH_CONFIG.bak"
+
+echo "[*] Modifying SSH configuration..."
+
+# Use sed to modify specific settings
+sed -i "s/^#Port 22/Port $SSH_PORT/" "$SSH_CONFIG"
+sed -i "s/^Port [0-9]*/Port $SSH_PORT/" "$SSH_CONFIG"
+sed -i "s/^#UsePAM yes/UsePAM yes/" "$SSH_CONFIG"
+sed -i "s/^#X11Forwarding yes/X11Forwarding yes/" "$SSH_CONFIG"
+sed -i "s/^#PrintMotd no/PrintMotd no/" "$SSH_CONFIG"
+sed -i "s/^#AcceptEnv LANG LC_\*/AcceptEnv LANG LC_\*/" "$SSH_CONFIG"
+sed -i "s/^#Subsystem sftp/Subsystem sftp/" "$SSH_CONFIG"
+sed -i "s/^#ChallengeResponseAuthentication yes/ChallengeResponseAuthentication no/" "$SSH_CONFIG"
+sed -i "s/^ChallengeResponseAuthentication yes/ChallengeResponseAuthentication no/" "$SSH_CONFIG"
+
 if [ $? -eq 0 ]; then
     echo "[+] SSH configuration updated successfully."
-    chmod 600 "$SSH_CONFIG"
-    if [ $? -eq 0 ]; then
-        echo "[+] Permissions for '$SSH_CONFIG' set to 600."
-    else
-        echo "[-] Failed to set permissions for '$SSH_CONFIG'."
-    fi
 else
     echo "[-] Failed to update SSH configuration."
 fi
@@ -581,24 +487,11 @@ fi
 # ------------------------------
 echo "[*] Managing packages..."
 
-# 17. Delete ophcrack
-echo "[*] Removing ophcrack..."
-if dpkg -l | grep -qw ophcrack; then
-    apt remove --purge -y ophcrack
-    apt autoremove -y
-    if [ $? -eq 0 ]; then
-        echo "[+] ophcrack removed successfully."
-    else
-        echo "[-] Failed to remove ophcrack."
-    fi
-else
-    echo "[+] ophcrack is not installed."
-fi
-
-# 18. Remove Unnecessary Packages
+# 17. Remove Unnecessary Packages
 echo "[*] Removing unnecessary packages..."
 UNNECESSARY_PACKAGES=("libreoffice*" "thunderbird*" "transmission*" "brasero*" "gnome-games*" "aisleriot*" "gnome-mahjongg*" "gnome-mines*" "gnome-sudoku*" "ftp*" "telnet*" "yelp*" "yelp-xsl*" "samba-common*" "samba-common-bin*" "tcpdump*")
 for pkg in "${UNNECESSARY_PACKAGES[@]}"; do
+    echo "[*] Purging package '$pkg'..."
     apt purge -y "$pkg"
     if [ $? -eq 0 ]; then
         echo "[+] Package '$pkg' removed successfully."
@@ -606,8 +499,30 @@ for pkg in "${UNNECESSARY_PACKAGES[@]}"; do
         echo "[-] Failed to remove package '$pkg' or it does not exist."
     fi
 done
+
+# 32. Remove Hacking Tools
+echo "[*] Checking and removing hacking tools..."
+for tool in "${HACKER_TOOLS[@]}"; do
+    if dpkg -l | grep -qw "$tool"; then
+        echo "[*] Removing $tool..."
+        apt remove --purge -y "$tool"
+        if [ $? -eq 0 ]; then
+            echo "[+] $tool removed successfully."
+        else
+            echo "[-] Failed to remove $tool."
+        fi
+    else
+        echo "[+] $tool is not installed."
+    fi
+done
+
+# Clean up residual dependencies
 apt autoremove -y
-echo "[+] Unnecessary packages removed successfully."
+if [ $? -eq 0 ]; then
+    echo "[+] Residual dependencies cleaned up successfully."
+else
+    echo "[-] Failed to clean up residual dependencies."
+fi
 
 # ------------------------------
 # Service Configuration
@@ -615,57 +530,73 @@ echo "[+] Unnecessary packages removed successfully."
 echo "[*] Configuring services..."
 
 # 19. Disable avahi-daemon
-echo "[*] Disabling avahi-daemon..."
-if systemctl is-enabled --quiet avahi-daemon; then
-    systemctl disable --now avahi-daemon
-    if [ $? -eq 0 ]; then
-        echo "[+] avahi-daemon disabled successfully."
+echo "[*] Disabling avahi-daemon if installed..."
+if systemctl list-unit-files | grep -qw avahi-daemon.service; then
+    if systemctl is-enabled --quiet avahi-daemon; then
+        systemctl disable --now avahi-daemon
+        if [ $? -eq 0 ]; then
+            echo "[+] avahi-daemon disabled successfully."
+        else
+            echo "[-] Failed to disable avahi-daemon."
+        fi
     else
-        echo "[-] Failed to disable avahi-daemon."
+        echo "[+] avahi-daemon is already disabled."
     fi
 else
-    echo "[+] avahi-daemon is already disabled."
+    echo "[+] avahi-daemon is not installed."
 fi
 
 # 20. Disable Apache2 Service
-echo "[*] Disabling Apache2 service..."
-if systemctl is-enabled --quiet apache2; then
-    systemctl disable --now apache2
-    if [ $? -eq 0 ]; then
-        echo "[+] Apache2 service disabled successfully."
+echo "[*] Disabling Apache2 service if installed..."
+if systemctl list-unit-files | grep -qw apache2.service; then
+    if systemctl is-enabled --quiet apache2; then
+        systemctl disable --now apache2
+        if [ $? -eq 0 ]; then
+            echo "[+] Apache2 service disabled successfully."
+        else
+            echo "[-] Failed to disable Apache2 service."
+        fi
     else
-        echo "[-] Failed to disable Apache2 service."
+        echo "[+] Apache2 service is already disabled."
     fi
 else
-    echo "[+] Apache2 service is already disabled."
+    echo "[+] Apache2 is not installed."
 fi
 
 # 21. Disable Nginx Service
-echo "[*] Disabling Nginx service..."
-if systemctl is-enabled --quiet nginx; then
-    systemctl disable --now nginx
-    if [ $? -eq 0 ]; then
-        echo "[+] Nginx service disabled successfully."
+echo "[*] Disabling Nginx service if installed..."
+if systemctl list-unit-files | grep -qw nginx.service; then
+    if systemctl is-enabled --quiet nginx; then
+        systemctl disable --now nginx
+        if [ $? -eq 0 ]; then
+            echo "[+] Nginx service disabled successfully."
+        else
+            echo "[-] Failed to disable Nginx service."
+        fi
     else
-        echo "[-] Failed to disable Nginx service."
+        echo "[+] Nginx service is already disabled."
     fi
 else
-    echo "[+] Nginx service is already disabled."
+    echo "[+] Nginx is not installed."
 fi
 
 # 22. Disable FTP Services if Installed
 echo "[*] Disabling FTP services if installed..."
 FTP_SERVICES=("vsftpd" "proftpd" "pure-ftpd")
 for ftp_service in "${FTP_SERVICES[@]}"; do
-    if systemctl is-active --quiet "$ftp_service"; then
-        systemctl disable --now "$ftp_service"
-        if [ $? -eq 0 ]; then
-            echo "[+] '$ftp_service' service disabled."
+    if systemctl list-unit-files | grep -qw "$ftp_service.service"; then
+        if systemctl is-active --quiet "$ftp_service"; then
+            systemctl disable --now "$ftp_service"
+            if [ $? -eq 0 ]; then
+                echo "[+] '$ftp_service' service disabled."
+            else
+                echo "[-] Failed to disable '$ftp_service' service."
+            fi
         else
-            echo "[-] Failed to disable '$ftp_service' service."
+            echo "[+] '$ftp_service' service is not active."
         fi
     else
-        echo "[-] '$ftp_service' service is not active or not installed."
+        echo "[+] '$ftp_service' service is not installed."
     fi
 done
 
@@ -711,29 +642,6 @@ else
     echo "[-] Failed to configure Fail2Ban."
 fi
 
-# 24. Disable USB Storage (Optional)
-echo "[*] Disabling USB storage (optional)..."
-echo "install usb-storage /bin/true" > /etc/modprobe.d/usb-storage.conf
-if [ $? -eq 0 ]; then
-    update-initramfs -u
-    if [ $? -eq 0 ]; then
-        echo "[+] USB storage disabled successfully."
-    else
-        echo "[-] Failed to update initramfs after disabling USB storage."
-    fi
-else
-    echo "[-] Failed to disable USB storage."
-fi
-
-# 25. Restrict Access to Root Directory
-echo "[*] Restricting access to the root directory..."
-chmod 700 /root
-if [ $? -eq 0 ]; then
-    echo "[+] Access to the root directory restricted."
-else
-    echo "[-] Failed to restrict access to the root directory."
-fi
-
 # ------------------------------
 # Audit and Monitoring
 # ------------------------------
@@ -757,7 +665,7 @@ fi
 echo "[*] Starting and enabling auditd service..."
 systemctl start auditd
 if [ $? -eq 0 ]; then
-    echo "[+] auditd service started successfully."
+        echo "[+] auditd service started successfully."
 else
     echo "[-] Failed to start auditd service."
 fi
@@ -805,158 +713,16 @@ fi
 
 # Configure Logwatch to send reports daily
 echo "[*] Configuring Logwatch..."
-sed -i 's/^Output = stdout/Output = mail/' /usr/share/logwatch/default.conf/logwatch.conf
-sed -i 's/^MailTo = root/MailTo = your_email@example.com/' /usr/share/logwatch/default.conf/logwatch.conf  # Replace with your email
-sed -i 's/^Detail = Low/Detail = High/' /usr/share/logwatch/default.conf/logwatch.conf
+LOGWATCH_CONF="/usr/share/logwatch/default.conf/logwatch.conf"
+cp "$LOGWATCH_CONF" "$LOGWATCH_CONF.bak"
+sed -i 's/^Output = stdout/Output = mail/' "$LOGWATCH_CONF"
+sed -i 's/^MailTo = root/MailTo = your_email@example.com/' "$LOGWATCH_CONF"  # Replace with your email
+sed -i 's/^Detail = Low/Detail = High/' "$LOGWATCH_CONF"
 if [ $? -eq 0 ]; then
     echo "[+] Logwatch configured successfully."
 else
     echo "[-] Failed to configure Logwatch."
 fi
-
-# ------------------------------
-# Program Authorization
-# ------------------------------
-echo "[*] Ensuring only authorized programs are installed..."
-
-# 29. Fetch list of authorized programs from the manifest
-echo "[*] Fetching list of authorized programs..."
-AUTHORIZED_PROGRAMS=$(wget -q -O - "$AUTHORIZED_PROGRAMS_URL" | awk -F, '{print $1}')
-if [ $? -eq 0 ]; then
-    echo "[+] Authorized programs list fetched successfully."
-else
-    echo "[-] Failed to fetch authorized programs list."
-    exit 1
-fi
-
-# 30. Get currently installed programs
-echo "[*] Getting list of installed programs..."
-INSTALLED_PROGRAMS=$(apt list --installed 2>/dev/null | cut -d/ -f1)
-if [ $? -eq 0 ]; then
-    echo "[+] Installed programs list retrieved successfully."
-else
-    echo "[-] Failed to retrieve installed programs list."
-    exit 1
-fi
-
-# 31. Remove unauthorized programs
-echo "[*] Removing unauthorized programs..."
-for program in $INSTALLED_PROGRAMS; do
-    if ! echo "$AUTHORIZED_PROGRAMS" | grep -wq "$program"; then
-        echo "[*] Removing unauthorized program: $program"
-        apt purge -y "$program"
-        if [ $? -eq 0 ]; then
-            echo "[+] Program '$program' removed successfully."
-        else
-            echo "[-] Failed to remove program '$program'. It may not exist or another issue occurred."
-        fi
-    fi
-done
-
-# 32List of hacking tools to check for and remove
-HACKER_TOOLS=("john" "hydra" "nmap" "zenmap" "metasploit" "wireshark" "sqlmap" "aircrack-ng" "ophcrack")
-
-echo "[*] Checking and removing hacking tools..."
-for tool in "${HACKER_TOOLS[@]}"; do
-    if dpkg -l | grep -qw "$tool"; then
-        echo "[*] Removing $tool..."
-        apt remove --purge -y "$tool"
-        if [ $? -eq 0 ]; then
-            echo "[+] $tool removed successfully."
-        else
-            echo "[-] Failed to remove $tool."
-        fi
-    else
-        echo "[+] $tool is not installed."
-    fi
-done
-
-
-# Clean up residual dependencies
-apt autoremove -y
-if [ $? -eq 0 ]; then
-    echo "[+] Residual dependencies cleaned up successfully."
-else
-    echo "[-] Failed to clean up residual dependencies."
-fi
-echo "[+] Unauthorized programs removed successfully."
-
-# ------------------------------
-# Automated Testing
-# ------------------------------
-echo "[*] Initiating Automated Testing..."
-
-# Define a function for automated tests
-run_tests() {
-    echo "[*] Running automated tests..."
-
-    # Test if unauthorized users are deleted
-    for user in $(cut -f1 -d: /etc/passwd); do
-        if [[ ! " ${AUTHORIZED_USERS[@]} " =~ " ${user} " ]]; then
-            USER_ID=$(id -u "$user" 2>/dev/null)
-            if [[ $? -eq 0 && "$USER_ID" -ge 1000 && "$user" != "nobody" ]]; then
-                echo "[-] Unauthorized user '$user' still exists."
-            fi
-        fi
-    done
-
-    # Test if UFW is enabled
-    ufw status | grep -qw "Status: active"
-    if [ $? -eq 0 ]; then
-        echo "[+] UFW is active."
-    else
-        echo "[-] UFW is not active."
-    fi
-
-    # Test if SSH port is correctly set
-    grep -q "^Port $SSH_PORT" "$SSH_CONFIG"
-    if [ $? -eq 0 ]; then
-        echo "[+] SSH port is correctly set to $SSH_PORT."
-    else
-        echo "[-] SSH port is not correctly set."
-    fi
-
-    # Test if Fail2Ban is active
-    systemctl is-active --quiet fail2ban
-    if [ $? -eq 0 ]; then
-        echo "[+] Fail2Ban is active."
-    else
-        echo "[-] Fail2Ban is not active."
-    fi
-
-    # Test if auditd is active
-    systemctl is-active --quiet auditd
-    if [ $? -eq 0 ]; then
-        echo "[+] auditd is active."
-    else
-        echo "[-] auditd is not active."
-    fi
-
-    # Test if Logwatch is installed
-    dpkg -l | grep -qw logwatch
-    if [ $? -eq 0 ]; then
-        echo "[+] Logwatch is installed."
-    else
-        echo "[-] Logwatch is not installed."
-    fi
-
-    # Test if unauthorized programs are removed
-    for program in $INSTALLED_PROGRAMS; do
-        if ! echo "$AUTHORIZED_PROGRAMS" | grep -wq "$program"; then
-            dpkg -l | grep -qw "$program"
-            if [ $? -eq 0 ]; then
-                echo "[-] Unauthorized program '$program' is still installed."
-            else
-                echo "[+] Unauthorized program '$program' is not installed."
-            fi
-        fi
-    done
-
-    echo "[*] Automated testing completed."
-}
-
-# Execute the tests
-run_tests
 
 # ------------------------------
 # Final Steps
