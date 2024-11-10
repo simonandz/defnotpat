@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==================================================
-# CyberPatriots Security Hardening Script for Linux Mint
+# CyberPatriots Security Hardening Script for Ubuntu 22.04
 # Enhanced Version with Improved Security Measures
 # ==================================================
 # This script performs essential security hardening steps
@@ -27,15 +27,19 @@ LOGFILE="/var/log/cyberpatriots_hardening.log"
 exec > >(tee -a "$LOGFILE") 2>&1
 
 # Define authorized users (retain these users on the system)
-AUTHORIZED_USERS=("your_username")  # Replace 'your_username' with actual usernames
+AUTHORIZED_USERS=(
+    "jaimie" "adalbern" "amayas" "fabienne" "mariya" "cornelius" "harold"
+    "taran" "felix" "angela" "rais" "miriam" "aldo" "timothy" "leilani"
+    "viktor" "linda" "jeanne" "martin" "josef" "roger" "stacy" "suzy" "liz"
+)
 
 # Define administrators (users with sudo privileges)
-ADMINISTRATORS=("admin_username")  # Replace 'admin_username' with actual admin usernames
+ADMINISTRATORS=("perry" "carlos" "kan" "alice" "josefina")
 
 # Define group authorizations (group: authorized members)
 declare -A GROUPS_AUTHORIZED=(
     ["adm"]="syslog"
-    ["sudo"]="admin_username"  # Replace 'admin_username' with actual admin usernames
+    ["sudo"]="perry,carlos,kan,alice,josefina"
     # Add other groups as needed
 )
 
@@ -46,14 +50,6 @@ declare -A USERS_AUTHORIZED=(
     ["sys"]="/usr/sbin/nologin"
     # Do not change root's shell
     # Add other system users as needed
-)
-
-# Disable guest access via LightDM
-GUEST_CONFIG='/usr/share/lightdm/lightdm.conf.d/50-ubuntu.conf'
-GUEST_FILE_CONTENT=(
-    "[Seat:*]"
-    "user-session=ubuntu"
-    "allow-guest=false"
 )
 
 # Password Policy Configuration
@@ -78,7 +74,7 @@ PASSWORD_STRENGTH='/etc/pam.d/common-password'
 
 # SSH Configuration
 SSH_CONFIG='/etc/ssh/sshd_config'
-SSH_PORT=2222  # Set your desired SSH port (e.g., 2222)
+SSH_PORT=22  # Keep the default SSH port
 
 # File Types to Remove
 FILE_TYPES_TO_REMOVE=("*.mp3" "*.avi" "*.mkv" "*.mp4" "*.m4a" "*.flac")
@@ -94,7 +90,7 @@ echo "[*] Managing users and permissions..."
 # 1. Delete Unauthorized Users
 echo "[*] Deleting unauthorized users..."
 for user in $(awk -F: '{ print $1 }' /etc/passwd); do
-    if [[ ! " ${AUTHORIZED_USERS[@]} " =~ " ${user} " ]]; then
+    if [[ ! " ${AUTHORIZED_USERS[@]} " =~ " ${user} " ]] && [[ ! " ${ADMINISTRATORS[@]} " =~ " ${user} " ]]; then
         USER_ID=$(id -u "$user" 2>/dev/null)
         if [[ $? -ne 0 ]]; then
             echo "[-] Failed to get UID for user '$user'. Skipping."
@@ -224,20 +220,18 @@ for group in "${!GROUPS_AUTHORIZED[@]}"; do
     done
 done
 
-# ------------------------------
-# Disable Guest Access via LightDM
-# ------------------------------
-echo "[*] Disabling guest access via LightDM..."
-if [ -f "$GUEST_CONFIG" ]; then
-    echo "[*] Writing guest configuration to $GUEST_CONFIG"
-    printf "%s\n" "${GUEST_FILE_CONTENT[@]}" > "$GUEST_CONFIG"
+# 5. Add 'mariya' to the 'pioneers' group
+echo "[*] Adding 'mariya' to the 'pioneers' group..."
+if id "mariya" &>/dev/null; then
+    groupadd -f pioneers
+    usermod -aG pioneers mariya
     if [ $? -eq 0 ]; then
-        echo "[+] Guest access disabled successfully."
+        echo "[+] 'mariya' added to the 'pioneers' group."
     else
-        echo "[-] Failed to disable guest access."
+        echo "[-] Failed to add 'mariya' to the 'pioneers' group."
     fi
 else
-    echo "[-] Guest configuration file '$GUEST_CONFIG' does not exist."
+    echo "[-] User 'mariya' does not exist."
 fi
 
 # ------------------------------
@@ -245,7 +239,7 @@ fi
 # ------------------------------
 echo "[*] Configuring the firewall..."
 
-# 5. Enable and Update Firewall (UFW)
+# 6. Enable and Update Firewall (UFW)
 echo "[*] Installing and enabling UFW (Uncomplicated Firewall)..."
 if ! dpkg -l | grep -qw ufw; then
     apt update && apt install -y ufw
@@ -267,7 +261,7 @@ else
     echo "[-] Failed to enable UFW."
 fi
 
-# 6. Allow SSH through the Firewall
+# 7. Allow SSH through the Firewall
 echo "[*] Configuring UFW to allow SSH on port $SSH_PORT..."
 ufw allow "$SSH_PORT"/tcp
 if [ $? -eq 0 ]; then
@@ -279,7 +273,7 @@ fi
 # Remove default SSH rule if exists
 ufw delete allow OpenSSH &>/dev/null
 
-# 7. Enable UFW Logging
+# 8. Enable UFW Logging
 echo "[*] Enabling UFW logging..."
 ufw logging on
 if [ $? -eq 0 ]; then
@@ -293,7 +287,7 @@ fi
 # ------------------------------
 echo "[*] Setting up automatic system updates..."
 
-# 8. Enable Automatic Updates and Check for Updates Daily
+# 9. Enable Automatic Updates and Check for Updates Daily
 echo "[*] Installing unattended-upgrades..."
 if ! dpkg -l | grep -qw unattended-upgrades; then
     apt install -y unattended-upgrades
@@ -310,7 +304,7 @@ fi
 echo "[*] Configuring unattended-upgrades..."
 dpkg-reconfigure --priority=low unattended-upgrades
 if [ $? -eq 0 ]; then
-    echo "[+] unattended-upgrades configured successfully."
+        echo "[+] unattended-upgrades configured successfully."
 else
     echo "[-] Failed to configure unattended-upgrades."
 fi
@@ -329,7 +323,7 @@ else
     echo "[-] Failed to configure daily update checks."
 fi
 
-# 9. Upgrade All Packages
+# 10. Upgrade All Packages
 echo "[*] Upgrading all packages to the latest versions..."
 apt update && apt upgrade -y
 if [ $? -eq 0 ]; then
@@ -338,7 +332,7 @@ else
     echo "[-] Failed to upgrade packages."
 fi
 
-# 10. Enable Automatic Reboots for Security Updates
+# 11. Enable Automatic Reboots for Security Updates
 echo "[*] Configuring automatic reboots for security updates..."
 cat <<EOF > /etc/apt/apt.conf.d/50unattended-upgrades
 Unattended-Upgrade::Automatic-Reboot "true";
@@ -355,7 +349,7 @@ fi
 # ------------------------------
 echo "[*] Managing files..."
 
-# 11. Remove Specified Media Files
+# 12. Remove Specified Media Files
 echo "[*] Deleting specified media files..."
 for pattern in "${FILE_TYPES_TO_REMOVE[@]}"; do
     echo "[*] Finding files matching '$pattern'..."
@@ -380,7 +374,7 @@ done
 # ------------------------------
 echo "[*] Enforcing strong password policies..."
 
-# 12. Update Password Requirements
+# 13. Update Password Requirements
 echo "[*] Installing libpam-pwquality..."
 if ! dpkg -l | grep -qw libpam-pwquality; then
     apt install -y libpam-pwquality
@@ -409,7 +403,7 @@ else
     echo "[-] Failed to update password strength requirements."
 fi
 
-# 13. Configure Account Lockout
+# 14. Configure Account Lockout
 echo "[*] Configuring account lockout settings..."
 # Backup the original file
 cp "$ACCOUNT_LOCKOUT_CONFIG" "$ACCOUNT_LOCKOUT_CONFIG.bak"
@@ -423,7 +417,7 @@ else
     echo "[-] Failed to configure account lockout settings."
 fi
 
-# 14. Configure Password Aging in /etc/login.defs
+# 15. Configure Password Aging in /etc/login.defs
 echo "[*] Configuring password aging settings in /etc/login.defs..."
 sed -i.bak -E "s/^(PASS_MAX_DAYS\s+)([0-9]+)/\1$PASS_MAX_DAYS/" /etc/login.defs
 sed -i -E "s/^(PASS_MIN_DAYS\s+)([0-9]+)/\1$PASS_MIN_DAYS/" /etc/login.defs
@@ -440,7 +434,7 @@ fi
 # ------------------------------
 echo "[*] Configuring SSH..."
 
-# 15. Apply SSH Configuration
+# 16. Apply SSH Configuration
 echo "[*] Backing up SSH configuration..."
 cp "$SSH_CONFIG" "$SSH_CONFIG.bak"
 
@@ -449,6 +443,8 @@ echo "[*] Modifying SSH configuration..."
 # Use sed to modify specific settings
 sed -i "s/^#Port 22/Port $SSH_PORT/" "$SSH_CONFIG"
 sed -i "s/^Port [0-9]*/Port $SSH_PORT/" "$SSH_CONFIG"
+sed -i "s/^#PermitRootLogin prohibit-password/PermitRootLogin no/" "$SSH_CONFIG"
+sed -i "s/^PermitRootLogin yes/PermitRootLogin no/" "$SSH_CONFIG"
 sed -i "s/^#UsePAM yes/UsePAM yes/" "$SSH_CONFIG"
 sed -i "s/^#X11Forwarding yes/X11Forwarding yes/" "$SSH_CONFIG"
 sed -i "s/^#PrintMotd no/PrintMotd no/" "$SSH_CONFIG"
@@ -463,7 +459,7 @@ else
     echo "[-] Failed to update SSH configuration."
 fi
 
-# 16. Restart SSH Service to Apply Changes
+# 17. Restart SSH Service to Apply Changes
 echo "[*] Restarting SSH service..."
 if systemctl is-active --quiet ssh; then
     systemctl restart ssh
@@ -487,9 +483,46 @@ fi
 # ------------------------------
 echo "[*] Managing packages..."
 
-# 17. Remove Unnecessary Packages
+# 18. Ensure Firefox is installed from the official Mozilla PPA
+echo "[*] Configuring Firefox installation..."
+snap remove firefox &>/dev/null
+if [ $? -eq 0 ]; then
+    echo "[+] Removed Firefox SNAP package."
+fi
+
+add-apt-repository -y ppa:mozillateam/ppa
+echo 'Package: *
+Pin: release o=LP-PPA-mozillateam
+Pin-Priority: 1001' | tee /etc/apt/preferences.d/mozilla-firefox
+apt update
+apt install -y firefox
+if [ $? -eq 0 ]; then
+    echo "[+] Firefox installed from Mozilla PPA."
+else
+    echo "[-] Failed to install Firefox from Mozilla PPA."
+fi
+
+# 19. Ensure Thunderbird is installed
+echo "[*] Ensuring Thunderbird is installed..."
+apt install -y thunderbird
+if [ $? -eq 0 ]; then
+    echo "[+] Thunderbird is installed and up to date."
+else
+    echo "[-] Failed to install Thunderbird."
+fi
+
+# 20. Ensure Perl is installed
+echo "[*] Ensuring Perl is installed..."
+apt install -y perl
+if [ $? -eq 0 ]; then
+    echo "[+] Perl is installed."
+else
+    echo "[-] Failed to install Perl."
+fi
+
+# 21. Remove Unnecessary Packages
 echo "[*] Removing unnecessary packages..."
-UNNECESSARY_PACKAGES=("libreoffice*" "thunderbird*" "transmission*" "brasero*" "gnome-games*" "aisleriot*" "gnome-mahjongg*" "gnome-mines*" "gnome-sudoku*" "ftp*" "telnet*" "yelp*" "yelp-xsl*" "samba-common*" "samba-common-bin*" "tcpdump*")
+UNNECESSARY_PACKAGES=("libreoffice*" "transmission*" "brasero*" "gnome-games*" "aisleriot*" "gnome-mahjongg*" "gnome-mines*" "gnome-sudoku*" "ftp*" "telnet*" "yelp*" "yelp-xsl*" "samba-common*" "samba-common-bin*" "tcpdump*")
 for pkg in "${UNNECESSARY_PACKAGES[@]}"; do
     echo "[*] Purging package '$pkg'..."
     apt purge -y "$pkg"
@@ -500,7 +533,7 @@ for pkg in "${UNNECESSARY_PACKAGES[@]}"; do
     fi
 done
 
-# 32. Remove Hacking Tools
+# 22. Remove Hacking Tools
 echo "[*] Checking and removing hacking tools..."
 for tool in "${HACKER_TOOLS[@]}"; do
     if dpkg -l | grep -qw "$tool"; then
@@ -529,7 +562,7 @@ fi
 # ------------------------------
 echo "[*] Configuring services..."
 
-# 19. Disable avahi-daemon
+# 23. Disable avahi-daemon
 echo "[*] Disabling avahi-daemon if installed..."
 if systemctl list-unit-files | grep -qw avahi-daemon.service; then
     if systemctl is-enabled --quiet avahi-daemon; then
@@ -546,7 +579,7 @@ else
     echo "[+] avahi-daemon is not installed."
 fi
 
-# 20. Disable Apache2 Service
+# 24. Disable Apache2 Service
 echo "[*] Disabling Apache2 service if installed..."
 if systemctl list-unit-files | grep -qw apache2.service; then
     if systemctl is-enabled --quiet apache2; then
@@ -563,7 +596,7 @@ else
     echo "[+] Apache2 is not installed."
 fi
 
-# 21. Disable Nginx Service
+# 25. Disable Nginx Service
 echo "[*] Disabling Nginx service if installed..."
 if systemctl list-unit-files | grep -qw nginx.service; then
     if systemctl is-enabled --quiet nginx; then
@@ -580,7 +613,7 @@ else
     echo "[+] Nginx is not installed."
 fi
 
-# 22. Disable FTP Services if Installed
+# 26. Disable FTP Services if Installed
 echo "[*] Disabling FTP services if installed..."
 FTP_SERVICES=("vsftpd" "proftpd" "pure-ftpd")
 for ftp_service in "${FTP_SERVICES[@]}"; do
@@ -600,7 +633,7 @@ for ftp_service in "${FTP_SERVICES[@]}"; do
     fi
 done
 
-# 23. Install and Configure Fail2Ban
+# 27. Install and Configure Fail2Ban
 echo "[*] Installing and configuring Fail2Ban..."
 if ! dpkg -l | grep -qw fail2ban; then
     apt install -y fail2ban
@@ -642,12 +675,23 @@ else
     echo "[-] Failed to configure Fail2Ban."
 fi
 
+# 28. Install X2GO Server
+echo "[*] Installing X2GO server..."
+add-apt-repository -y ppa:x2go/stable
+apt update
+apt install -y x2goserver x2goserver-xsession
+if [ $? -eq 0 ]; then
+    echo "[+] X2GO server installed successfully."
+else
+    echo "[-] Failed to install X2GO server."
+fi
+
 # ------------------------------
 # Audit and Monitoring
 # ------------------------------
 echo "[*] Setting up audit and monitoring tools..."
 
-# 26. Install and Configure Auditd
+# 29. Install and Configure Auditd
 echo "[*] Installing auditd..."
 if ! dpkg -l | grep -qw auditd; then
     apt install -y auditd audispd-plugins
@@ -677,7 +721,7 @@ else
     echo "[-] Failed to enable auditd service."
 fi
 
-# 27. Configure Audit Rules
+# 30. Configure Audit Rules
 echo "[*] Configuring audit rules..."
 cat <<EOF > /etc/audit/rules.d/audit.rules
 -w /etc/passwd -p wa -k passwd_changes
@@ -697,7 +741,7 @@ else
     echo "[-] Failed to configure audit rules."
 fi
 
-# 28. Install and Configure Logwatch
+# 31. Install and Configure Logwatch
 echo "[*] Installing Logwatch for log monitoring..."
 if ! dpkg -l | grep -qw logwatch; then
     apt install -y logwatch
@@ -716,7 +760,7 @@ echo "[*] Configuring Logwatch..."
 LOGWATCH_CONF="/usr/share/logwatch/default.conf/logwatch.conf"
 cp "$LOGWATCH_CONF" "$LOGWATCH_CONF.bak"
 sed -i 's/^Output = stdout/Output = mail/' "$LOGWATCH_CONF"
-sed -i 's/^MailTo = root/MailTo = your_email@example.com/' "$LOGWATCH_CONF"  # Replace with your email
+sed -i 's/^MailTo = root/MailTo = root/' "$LOGWATCH_CONF"  # Assuming root mail is monitored
 sed -i 's/^Detail = Low/Detail = High/' "$LOGWATCH_CONF"
 if [ $? -eq 0 ]; then
     echo "[+] Logwatch configured successfully."
