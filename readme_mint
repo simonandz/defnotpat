@@ -1,4 +1,4 @@
-sudo chmod ./mint.sh
+sudo chmod +x ./mint.sh
 sudo mint.sh
 
 1st Thing!!!!
