@@ -31,8 +31,7 @@ declare -A GROUPS_AUTHORIZED=(
 
 # Define users with specific shells (restrict login capabilities)
 declare -A USERS_AUTHORIZED=(
-    ["root"]="/usr/sbin/nologin"
-    # Add other system users with restricted shells as necessary
+    # Add system users with restricted shells as necessary
     # Ensure authorized administrators have /bin/bash
 )
 
@@ -140,7 +139,7 @@ create_user() {
 create_user "perry" "M4mm@lOfAct!0n" "sudo"
 create_user "carlos" "MagicFore$t4" "sudo"
 create_user "kan" "uCanD0It!!" "sudo"
-create_user "alice" "alice" "sudo"
+create_user "alice" "Al!ceStrongP@ss1" "sudo"
 create_user "josefina" "RocketShip@27" "sudo"
 
 # Add Authorized Users without passwords (assuming they already have)
@@ -171,7 +170,7 @@ fi
 # 3. Delete Unauthorized Users
 echo "[*] Deleting unauthorized users..."
 for user in $(cut -f1 -d: /etc/passwd); do
-    if [[ ! " ${AUTHORIZED_USERS[@]} " =~ " ${user} " && ! " ${AUTHORIZED_ADMINISTRATORS[@]} " =~ " ${user} " && "$user" != "root" && "$user" != "your_primary_admin" ]]; then
+    if [[ ! " ${AUTHORIZED_USERS[@]} " =~ " ${user} " && ! " ${AUTHORIZED_ADMINISTRATORS[@]} " =~ " ${user} " && "$user" != "root" ]]; then
         USER_ID=$(id -u "$user" 2>/dev/null)
         if [[ $? -ne 0 ]]; then
             echo "[-] Failed to get UID for user '$user'. Skipping."
@@ -242,11 +241,11 @@ for user in "${!USERS_AUTHORIZED[@]}"; do
         else
             echo "[+] User '$user' already has the desired shell."
         fi
-        # Secure the shell configuration
+        # Secure the home directory permissions
         home_dir=$(getent passwd "$user" | cut -d: -f6)
-        chmod 755 "$home_dir"
+        chmod 700 "$home_dir"
         if [ $? -eq 0 ]; then
-            echo "[+] Permissions for home directory of '$user' set to 755."
+            echo "[+] Permissions for home directory of '$user' set to 700."
         else
             echo "[-] Failed to set permissions for home directory of '$user'."
         fi
@@ -691,7 +690,7 @@ for ftp_service in "${FTP_SERVICES[@]}"; do
             echo "[-] Failed to disable '$ftp_service' service."
         fi
     else
-        echo "[-] '$ftp_service' service is not active or not installed."
+        echo "[+] '$ftp_service' service is not active or not installed."
     fi
 done
 
@@ -815,31 +814,6 @@ else
     echo "[-] Failed to configure audit rules."
 fi
 
-# 3. Install and Configure Logwatch
-echo "[*] Installing Logwatch for log monitoring..."
-if ! dpkg -l | grep -qw logwatch; then
-    apt install -y logwatch
-    if [ $? -eq 0 ]; then
-        echo "[+] Logwatch installed successfully."
-    else
-        echo "[-] Failed to install Logwatch."
-        exit 1
-    fi
-else
-    echo "[+] Logwatch is already installed."
-fi
-
-# Configure Logwatch to send reports daily
-echo "[*] Configuring Logwatch..."
-sed -i 's/^Output = stdout/Output = mail/' /usr/share/logwatch/default.conf/logwatch.conf
-sed -i 's/^MailTo = root/MailTo = your_email@example.com/' /usr/share/logwatch/default.conf/logwatch.conf  # Replace with your email
-sed -i 's/^Detail = Low/Detail = High/' /usr/share/logwatch/default.conf/logwatch.conf
-if [ $? -eq 0 ]; then
-    echo "[+] Logwatch configured successfully."
-else
-    echo "[-] Failed to configure Logwatch."
-fi
-
 # ------------------------------
 # Program Authorization
 # ------------------------------
@@ -916,7 +890,7 @@ run_tests() {
 
     # Test if unauthorized users are deleted
     for user in $(cut -f1 -d: /etc/passwd); do
-        if [[ ! " ${AUTHORIZED_USERS[@]} " =~ " ${user} " && ! " ${AUTHORIZED_ADMINISTRATORS[@]} " =~ " ${user} " && "$user" != "root" && "$user" != "your_primary_admin" ]]; then
+        if [[ ! " ${AUTHORIZED_USERS[@]} " =~ " ${user} " && ! " ${AUTHORIZED_ADMINISTRATORS[@]} " =~ " ${user} " && "$user" != "root" ]]; then
             USER_ID=$(id -u "$user" 2>/dev/null)
             if [[ $? -eq 0 && "$USER_ID" -ge 1000 && "$user" != "nobody" ]]; then
                 echo "[-] Unauthorized user '$user' still exists."
@@ -954,14 +928,6 @@ run_tests() {
         echo "[+] auditd is active."
     else
         echo "[-] auditd is not active."
-    fi
-
-    # Test if Logwatch is installed
-    dpkg -l | grep -qw logwatch
-    if [ $? -eq 0 ]; then
-        echo "[+] Logwatch is installed."
-    else
-        echo "[-] Logwatch is not installed."
     fi
 
     # Test if unauthorized programs are removed
@@ -1021,6 +987,3 @@ run_tests
 echo "[+] CyberPatriots Security Hardening Completed Successfully."
 
 exit 0
-
-# Note: Replace 'your_email@example.com' with your actual email address in the Logwatch configuration.
-# Ensure that 'your_primary_admin' is replaced with the actual primary admin username to prevent accidental removal.
