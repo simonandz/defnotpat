@@ -48,14 +48,6 @@ declare -A USERS_AUTHORIZED=(
     # Add other system users as needed
 )
 
-# Disable guest access via LightDM
-GUEST_CONFIG='/usr/share/lightdm/lightdm.conf.d/50-ubuntu.conf'
-GUEST_FILE_CONTENT=(
-    "[Seat:*]"
-    "user-session=ubuntu"
-    "allow-guest=false"
-)
-
 # Password Policy Configuration
 MIN_PASS_LENGTH=12        # Set minimum password length
 MAX_PASS_LENGTH=24        # Set maximum password length
@@ -223,22 +215,6 @@ for group in "${!GROUPS_AUTHORIZED[@]}"; do
         fi
     done
 done
-
-# ------------------------------
-# Disable Guest Access via LightDM
-# ------------------------------
-echo "[*] Disabling guest access via LightDM..."
-if [ -f "$GUEST_CONFIG" ]; then
-    echo "[*] Writing guest configuration to $GUEST_CONFIG"
-    printf "%s\n" "${GUEST_FILE_CONTENT[@]}" > "$GUEST_CONFIG"
-    if [ $? -eq 0 ]; then
-        echo "[+] Guest access disabled successfully."
-    else
-        echo "[-] Failed to disable guest access."
-    fi
-else
-    echo "[-] Guest configuration file '$GUEST_CONFIG' does not exist."
-fi
 
 # ------------------------------
 # Firewall Configuration
@@ -436,58 +412,11 @@ else
 fi
 
 # ------------------------------
-# SSH Configuration
-# ------------------------------
-echo "[*] Configuring SSH..."
-
-# 15. Apply SSH Configuration
-echo "[*] Backing up SSH configuration..."
-cp "$SSH_CONFIG" "$SSH_CONFIG.bak"
-
-echo "[*] Modifying SSH configuration..."
-
-# Use sed to modify specific settings
-sed -i "s/^#Port 22/Port $SSH_PORT/" "$SSH_CONFIG"
-sed -i "s/^Port [0-9]*/Port $SSH_PORT/" "$SSH_CONFIG"
-sed -i "s/^#UsePAM yes/UsePAM yes/" "$SSH_CONFIG"
-sed -i "s/^#X11Forwarding yes/X11Forwarding yes/" "$SSH_CONFIG"
-sed -i "s/^#PrintMotd no/PrintMotd no/" "$SSH_CONFIG"
-sed -i "s/^#AcceptEnv LANG LC_\*/AcceptEnv LANG LC_\*/" "$SSH_CONFIG"
-sed -i "s/^#Subsystem sftp/Subsystem sftp/" "$SSH_CONFIG"
-sed -i "s/^#ChallengeResponseAuthentication yes/ChallengeResponseAuthentication no/" "$SSH_CONFIG"
-sed -i "s/^ChallengeResponseAuthentication yes/ChallengeResponseAuthentication no/" "$SSH_CONFIG"
-
-if [ $? -eq 0 ]; then
-    echo "[+] SSH configuration updated successfully."
-else
-    echo "[-] Failed to update SSH configuration."
-fi
-
-# 16. Restart SSH Service to Apply Changes
-echo "[*] Restarting SSH service..."
-if systemctl is-active --quiet ssh; then
-    systemctl restart ssh
-    if [ $? -eq 0 ]; then
-        echo "[+] SSH service restarted successfully."
-    else
-        echo "[-] Failed to restart SSH service."
-    fi
-else
-    echo "[-] SSH service is not active. Starting SSH service..."
-    systemctl start ssh
-    if [ $? -eq 0 ]; then
-        echo "[+] SSH service started successfully."
-    else
-        echo "[-] Failed to start SSH service."
-    fi
-fi
-
-# ------------------------------
 # Package Management
 # ------------------------------
 echo "[*] Managing packages..."
 
-# 17. Remove Unnecessary Packages
+# 15. Remove Unnecessary Packages
 echo "[*] Removing unnecessary packages..."
 UNNECESSARY_PACKAGES=("libreoffice*" "thunderbird*" "transmission*" "brasero*" "gnome-games*" "aisleriot*" "gnome-mahjongg*" "gnome-mines*" "gnome-sudoku*" "ftp*" "telnet*" "yelp*" "yelp-xsl*" "samba-common*" "samba-common-bin*" "tcpdump*")
 for pkg in "${UNNECESSARY_PACKAGES[@]}"; do
@@ -500,7 +429,7 @@ for pkg in "${UNNECESSARY_PACKAGES[@]}"; do
     fi
 done
 
-# 32. Remove Hacking Tools
+# 16. Remove Hacking Tools
 echo "[*] Checking and removing hacking tools..."
 for tool in "${HACKER_TOOLS[@]}"; do
     if dpkg -l | grep -qw "$tool"; then
@@ -529,7 +458,7 @@ fi
 # ------------------------------
 echo "[*] Configuring services..."
 
-# 19. Disable avahi-daemon
+# 17. Disable avahi-daemon
 echo "[*] Disabling avahi-daemon if installed..."
 if systemctl list-unit-files | grep -qw avahi-daemon.service; then
     if systemctl is-enabled --quiet avahi-daemon; then
@@ -546,7 +475,7 @@ else
     echo "[+] avahi-daemon is not installed."
 fi
 
-# 20. Disable Apache2 Service
+# 18. Disable Apache2 Service
 echo "[*] Disabling Apache2 service if installed..."
 if systemctl list-unit-files | grep -qw apache2.service; then
     if systemctl is-enabled --quiet apache2; then
@@ -563,7 +492,7 @@ else
     echo "[+] Apache2 is not installed."
 fi
 
-# 21. Disable Nginx Service
+# 19. Disable Nginx Service
 echo "[*] Disabling Nginx service if installed..."
 if systemctl list-unit-files | grep -qw nginx.service; then
     if systemctl is-enabled --quiet nginx; then
@@ -578,150 +507,6 @@ if systemctl list-unit-files | grep -qw nginx.service; then
     fi
 else
     echo "[+] Nginx is not installed."
-fi
-
-# 22. Disable FTP Services if Installed
-echo "[*] Disabling FTP services if installed..."
-FTP_SERVICES=("vsftpd" "proftpd" "pure-ftpd")
-for ftp_service in "${FTP_SERVICES[@]}"; do
-    if systemctl list-unit-files | grep -qw "$ftp_service.service"; then
-        if systemctl is-active --quiet "$ftp_service"; then
-            systemctl disable --now "$ftp_service"
-            if [ $? -eq 0 ]; then
-                echo "[+] '$ftp_service' service disabled."
-            else
-                echo "[-] Failed to disable '$ftp_service' service."
-            fi
-        else
-            echo "[+] '$ftp_service' service is not active."
-        fi
-    else
-        echo "[+] '$ftp_service' service is not installed."
-    fi
-done
-
-# 23. Install and Configure Fail2Ban
-echo "[*] Installing and configuring Fail2Ban..."
-if ! dpkg -l | grep -qw fail2ban; then
-    apt install -y fail2ban
-    if [ $? -eq 0 ]; then
-        echo "[+] Fail2Ban installed successfully."
-    else
-        echo "[-] Failed to install Fail2Ban."
-        exit 1
-    fi
-else
-    echo "[+] Fail2Ban is already installed."
-fi
-
-# Configure Fail2Ban for SSH
-echo "[*] Configuring Fail2Ban for SSH..."
-cat <<EOF > /etc/fail2ban/jail.local
-[DEFAULT]
-ignoreip = 127.0.0.1/8
-bantime  = 600
-findtime  = 600
-maxretry = 5
-
-[sshd]
-enabled = true
-port    = $SSH_PORT
-logpath = %(sshd_log)s
-backend = %(sshd_backend)s
-EOF
-if [ $? -eq 0 ]; then
-    echo "[+] Fail2Ban configuration updated successfully."
-    systemctl restart fail2ban
-    systemctl enable fail2ban
-    if [ $? -eq 0 ]; then
-        echo "[+] Fail2Ban restarted and enabled successfully."
-    else
-        echo "[-] Failed to restart or enable Fail2Ban."
-    fi
-else
-    echo "[-] Failed to configure Fail2Ban."
-fi
-
-# ------------------------------
-# Audit and Monitoring
-# ------------------------------
-echo "[*] Setting up audit and monitoring tools..."
-
-# 26. Install and Configure Auditd
-echo "[*] Installing auditd..."
-if ! dpkg -l | grep -qw auditd; then
-    apt install -y auditd audispd-plugins
-    if [ $? -eq 0 ]; then
-        echo "[+] auditd installed successfully."
-    else
-        echo "[-] Failed to install auditd."
-        exit 1
-    fi
-else
-    echo "[+] auditd is already installed."
-fi
-
-# Start and enable auditd
-echo "[*] Starting and enabling auditd service..."
-systemctl start auditd
-if [ $? -eq 0 ]; then
-        echo "[+] auditd service started successfully."
-else
-    echo "[-] Failed to start auditd service."
-fi
-
-systemctl enable auditd
-if [ $? -eq 0 ]; then
-    echo "[+] auditd service enabled to start on boot."
-else
-    echo "[-] Failed to enable auditd service."
-fi
-
-# 27. Configure Audit Rules
-echo "[*] Configuring audit rules..."
-cat <<EOF > /etc/audit/rules.d/audit.rules
--w /etc/passwd -p wa -k passwd_changes
--w /etc/shadow -p wa -k shadow_changes
--w /etc/ssh/sshd_config -p wa -k sshd_config_changes
--w /var/log/auth.log -p wa -k auth_log_changes
-EOF
-if [ $? -eq 0 ]; then
-    echo "[+] Audit rules configured successfully."
-    systemctl restart auditd
-    if [ $? -eq 0 ]; then
-        echo "[+] auditd service restarted to apply new rules."
-    else
-        echo "[-] Failed to restart auditd service."
-    fi
-else
-    echo "[-] Failed to configure audit rules."
-fi
-
-# 28. Install and Configure Logwatch
-echo "[*] Installing Logwatch for log monitoring..."
-if ! dpkg -l | grep -qw logwatch; then
-    apt install -y logwatch
-    if [ $? -eq 0 ]; then
-        echo "[+] Logwatch installed successfully."
-    else
-        echo "[-] Failed to install Logwatch."
-        exit 1
-    fi
-else
-    echo "[+] Logwatch is already installed."
-fi
-
-# Configure Logwatch to send reports daily
-echo "[*] Configuring Logwatch..."
-LOGWATCH_CONF="/usr/share/logwatch/default.conf/logwatch.conf"
-cp "$LOGWATCH_CONF" "$LOGWATCH_CONF.bak"
-sed -i 's/^Output = stdout/Output = mail/' "$LOGWATCH_CONF"
-sed -i 's/^MailTo = root/MailTo = your_email@example.com/' "$LOGWATCH_CONF"  # Replace with your email
-sed -i 's/^Detail = Low/Detail = High/' "$LOGWATCH_CONF"
-if [ $? -eq 0 ]; then
-    echo "[+] Logwatch configured successfully."
-else
-    echo "[-] Failed to configure Logwatch."
 fi
 
 # ------------------------------
