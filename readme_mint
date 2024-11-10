@@ -1,3 +1,6 @@
+sudo chmod ./mint.sh
+sudo mint.sh
+
 1st Thing!!!!
 1. Copy and paste read me file into an email to send
 2. Send it to pc and then ask chatgpt to change the script below based on the requirements
