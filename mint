@@ -7,7 +7,6 @@
 # - Removes unauthorized users.
 # - Assigns administrators to the sudo group.
 # - Removes unauthorized users from the sudo group.
-# - Manages group memberships as specified.
 # - Upgrades password policies.
 # ==================================================
 
@@ -26,16 +25,41 @@ echo "[+] Starting User and Password Policy Management Script..."
 # ------------------------------
 
 # Define authorized users (retain these users on the system)
-AUTHORIZED_USERS=("your_username")  # Replace 'your_username' with actual usernames
+AUTHORIZED_USERS=(
+    "twellick"
+    "jplofe"
+    "pmccleery"
+    "wbraddock"
+    "ealderson"
+    "lchong"
+    "sswailem"
+    "pprice"
+    "sknowles"
+    "tcolby"
+    "jchutney"
+    "sweinsberg"
+    "sjacobs"
+    "lspencer"
+    "mralbern"
+    "jrobinson"
+    "gsheldern"
+    "coshearn"
+    "jlaslen"
+    "kshelvern"
+    "jtholdon"
+    "belkarn"
+    "bharper"
+)
 
 # Define administrators (users with sudo privileges)
-ADMINISTRATORS=("admin_username")  # Replace 'admin_username' with actual admin usernames
-
-# Define group authorizations (group: authorized members)
-declare -A GROUPS_AUTHORIZED=(
-    ["adm"]="syslog"
-    ["sudo"]="admin_username"  # Replace 'admin_username' with actual admin usernames
-    # Add other groups as needed
+ADMINISTRATORS=(
+    "twellick"
+    "jplofe"
+    "pmccleery"
+    "wbraddock"
+    "ealderson"
+    "lchong"
+    "sswailem"
 )
 
 # Password Policy Configuration
@@ -118,50 +142,6 @@ for admin in "${ADMINISTRATORS[@]}"; do
     else
         echo "[-] Administrator '$admin' does not exist."
     fi
-done
-
-# ------------------------------
-# Group Memberships
-# ------------------------------
-echo "[*] Managing group memberships..."
-
-for group in "${!GROUPS_AUTHORIZED[@]}"; do
-    authorized_members=${GROUPS_AUTHORIZED[$group]}
-    IFS=',' read -ra AUTH_MEMBERS <<< "$authorized_members"
-
-    # Get current members
-    current_members=$(getent group "$group" | awk -F: '{print $4}')
-    IFS=',' read -ra CURRENT_MEMBERS_ARRAY <<< "$current_members"
-
-    # Remove unauthorized members
-    for member in "${CURRENT_MEMBERS_ARRAY[@]}"; do
-        if [[ -n "$member" && ! " ${AUTH_MEMBERS[@]} " =~ " ${member} " ]]; then
-            echo "[*] Removing user '$member' from group '$group'"
-            deluser "$member" "$group"
-            if [ $? -eq 0 ]; then
-                echo "[+] User '$member' removed from group '$group' successfully."
-            else
-                echo "[-] Failed to remove user '$member' from group '$group'."
-            fi
-        fi
-    done
-
-    # Add authorized members
-    for authorized_member in "${AUTH_MEMBERS[@]}"; do
-        if [[ -n "$authorized_member" ]]; then
-            if id "$authorized_member" &>/dev/null; then
-                echo "[*] Adding user '$authorized_member' to group '$group'"
-                usermod -aG "$group" "$authorized_member"
-                if [ $? -eq 0 ]; then
-                    echo "[+] User '$authorized_member' added to group '$group' successfully."
-                else
-                    echo "[-] Failed to add user '$authorized_member' to group '$group'."
-                fi
-            else
-                echo "[-] Authorized user '$authorized_member' does not exist."
-            fi
-        fi
-    done
 done
 
 # ------------------------------
