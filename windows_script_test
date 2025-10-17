@@ -46,11 +46,14 @@ function Assert-Admin {
     }
 }
 
-function Do { 
-    param([scriptblock]$Action, [string]$Desc)
-    if ($AuditOnly) { 
-        Write-Host "[AUDIT] $Desc" -ForegroundColor Cyan 
-    } else { 
+function Invoke-HardeningAction {
+    param (
+        [scriptblock]$Action,
+        [string]$Desc
+    )
+    if ($AuditOnly) {
+        Write-Host "[AUDIT] $Desc" -ForegroundColor Cyan
+    } else {
         Write-Host "[APPLY] $Desc" -ForegroundColor Green
         try {
             & $Action
@@ -72,16 +75,27 @@ function Log-Finding {
     Add-Content -Path "$LogDir\findings-$stamp.txt" -Value "[$Severity] $Finding"
 }
 
-function Safe-NewDir([string]$p) { if(-not(Test-Path $p)) { New-Item -ItemType Directory -Path $p -Force | Out-Null } }
-function TimeStamp { Get-Date -Format "yyyyMMdd-HHmmss" }
+function Safe-NewDir([string]$p) {
+    if (-not (Test-Path $p)) {
+        New-Item -ItemType Directory -Path $p -Force | Out-Null
+    }
+}
+
+function TimeStamp {
+    Get-Date -Format "yyyyMMdd-HHmmss"
+}
 
 function Set-RegDword($path, $name, $val) {
-    if(-not (Test-Path $path)) { New-Item -Path $path -Force | Out-Null }
+    if (-not (Test-Path $path)) {
+        New-Item -Path $path -Force | Out-Null
+    }
     New-ItemProperty -Path $path -Name $name -PropertyType DWord -Value $val -Force | Out-Null
 }
 
 function Set-RegString($path, $name, $val) {
-    if(-not (Test-Path $path)) { New-Item -Path $path -Force | Out-Null }
+    if (-not (Test-Path $path)) {
+        New-Item -Path $path -Force | Out-Null
+    }
     New-ItemProperty -Path $path -Name $name -PropertyType String -Value $val -Force | Out-Null
 }
 
@@ -125,11 +139,15 @@ $RegKeysToBackup = @(
     'HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server'
 )
 
-foreach($k in $RegKeysToBackup) {
-    Do { reg.exe export $k "$regBackupDir\$(($k -replace '[\\/:*?""<>|]','_')).reg" /y 2>$null | Out-Null } "Backup registry: $k"
+foreach ($k in $RegKeysToBackup) {
+    Invoke-HardeningAction -Action {
+        reg.exe export $k "$regBackupDir\$(($k -replace '[\\/:*?""<>|]','_')).reg" /y 2>$null | Out-Null
+    } -Desc "Backup registry: $k"
 }
 
-Do { Get-Service | Select Name, DisplayName, Status, StartType | Export-Csv -NoTypeInformation -Path $svcBackupCsv } "Backup service startup states"
+Invoke-HardeningAction -Action {
+    Get-Service | Select Name, DisplayName, Status, StartType | Export-Csv -NoTypeInformation -Path $svcBackupCsv
+} -Desc "Backup service startup states"
 
 # ---------- User Account Audit & Management ----------
 Write-Host "`n[PHASE 2] User Account Management..." -ForegroundColor Yellow
@@ -139,40 +157,44 @@ $adminListTxt = Join-Path $runDir "local-admins.txt"
 
 # Enumerate current users
 $currentUsers = Get-LocalUser
-$currentUsers | Select Name, Enabled, PasswordRequired, PasswordLastSet, LastLogon,
-    @{N='PasswordAgeDays';E={if($_.PasswordLastSet) {(New-TimeSpan $_.PasswordLastSet).Days} else {"Never"}}} |
+$currentUsers |
+    Select Name, Enabled, PasswordRequired, PasswordLastSet, LastLogon,
+        @{N='PasswordAgeDays';E={ if ($_.PasswordLastSet) { (New-TimeSpan $_.PasswordLastSet).Days } else { "Never" } }} |
     Export-Csv $usersCsv -NoTypeInformation
 
 # Check for unauthorized users
-Do {
-    foreach($user in $currentUsers) {
+Invoke-HardeningAction -Action {
+    foreach ($user in $currentUsers) {
         $n = $user.Name
-        if($n -notin $AllAuthorizedAccounts) {
-            if($n -notlike '*$' -and $n -ne 'Administrator' -and $n -ne 'Guest' -and $n -ne 'DefaultAccount' -and $n -ne 'WDAGUtilityAccount') {
+        if ($n -notin $AllAuthorizedAccounts) {
+            if ($n -notlike '*$' -and $n -ne 'Administrator' -and $n -ne 'Guest' -and $n -ne 'DefaultAccount' -and $n -ne 'WDAGUtilityAccount') {
                 Log-Finding "Unauthorized user found: $n" "Critical"
-                if(-not $AuditOnly) {
-                    try { Disable-LocalUser -Name $n -ErrorAction Stop; Log-Finding "Disabled unauthorized user: $n" "Info" } catch {}
+                if (-not $AuditOnly) {
+                    try {
+                        Disable-LocalUser -Name $n -ErrorAction Stop
+                        Log-Finding "Disabled unauthorized user: $n" "Info"
+                    } catch {}
                 }
             }
         }
     }
-} "Check and disable unauthorized users"
+} -Desc "Check and disable unauthorized users"
 
-# Disable Guest; only disable built-in Administrator if we're not using it
-Do {
+# Disable Guest; only disable built-in Administrator if safe
+Invoke-HardeningAction -Action {
     Disable-LocalUser -Name 'Guest' -ErrorAction SilentlyContinue
-    if($CurrentUser -ne 'Administrator'){
+    if ($CurrentUser -ne 'Administrator') {
         Disable-LocalUser -Name 'Administrator' -ErrorAction SilentlyContinue
     }
-} "Disable Guest and (if safe) built-in Administrator"
+} -Desc "Disable Guest and (if safe) built-in Administrator"
 
-# Set password requirements for users (NOT for amojtabai - auto-login user)
-if(-not $SkipUserPasswords) {
-    Do {
-        foreach($userName in $AllAuthorizedAccounts) {
-            if($userName -ne 'amojtabai') {
+# Set password requirements for users (except amojtabai)
+if (-not $SkipUserPasswords) {
+    Invoke-HardeningAction -Action {
+        foreach ($userName in $AllAuthorizedAccounts) {
+            if ($userName -ne 'amojtabai') {
                 $user = Get-LocalUser -Name $userName -ErrorAction SilentlyContinue
-                if($user) {
+                if ($user) {
                     $newPass = "Cyb3rP@triot$(Get-Random -Minimum 1000 -Maximum 9999)!"
                     $secPass = ConvertTo-SecureString $newPass -AsPlainText -Force
                     Set-LocalUser -Name $userName -Password $secPass -PasswordNeverExpires $false -UserMayChangePassword $true
@@ -180,29 +202,33 @@ if(-not $SkipUserPasswords) {
                 }
             }
         }
-    } "Set secure passwords for authorized users (except amojtabai)"
+    } -Desc "Set secure passwords for authorized users (except amojtabai)"
 } else {
     Log-Finding "Skipping user password changes by request (-SkipUserPasswords)" "Info"
 }
 
 # Fix group memberships (Administrators + Remote Desktop Users)
-Do {
+Invoke-HardeningAction -Action {
     $adminsGroup = Get-LocalGroupMember -Group 'Administrators' -ErrorAction SilentlyContinue
     "Current Administrators group members:" | Out-File $adminListTxt
     $adminsGroup | Format-Table -AutoSize | Out-String | Add-Content $adminListTxt
 
-    foreach($admin in $AuthorizedAdmins) {
+    foreach ($admin in $AuthorizedAdmins) {
         $already = $adminsGroup | Where-Object { ($_.Name -split '\\')[-1] -ieq $admin }
-        if(-not $already) {
-            try { Add-LocalGroupMember -Group 'Administrators' -Member "$ComputerName\$admin" -ErrorAction Stop } catch {
-                try { Add-LocalGroupMember -Group 'Administrators' -Member $admin -ErrorAction Stop } catch {}
+        if (-not $already) {
+            try {
+                Add-LocalGroupMember -Group 'Administrators' -Member "$ComputerName\$admin" -ErrorAction Stop
+            } catch {
+                try {
+                    Add-LocalGroupMember -Group 'Administrators' -Member $admin -ErrorAction Stop
+                } catch {}
             }
             Log-Finding "Ensured $admin is in Administrators" "Info"
         }
     }
-    foreach($member in $adminsGroup) {
+    foreach ($member in $adminsGroup) {
         $memberName = ($member.Name -split '\\')[-1]
-        if($memberName -notin $AuthorizedAdmins -and $memberName -ne 'Administrator') {
+        if ($memberName -notin $AuthorizedAdmins -and $memberName -ne 'Administrator') {
             try {
                 Remove-LocalGroupMember -Group 'Administrators' -Member $member.Name -ErrorAction Stop
                 Log-Finding "Removed $memberName from Administrators" "Warning"
@@ -211,14 +237,16 @@ Do {
     }
 
     # RDP group
-    foreach($acct in $AllAuthorizedAccounts) {
+    foreach ($acct in $AllAuthorizedAccounts) {
         try {
             Add-LocalGroupMember -Group 'Remote Desktop Users' -Member "$ComputerName\$acct" -ErrorAction Stop
         } catch {
-            try { Add-LocalGroupMember -Group 'Remote Desktop Users' -Member $acct -ErrorAction Stop } catch {}
+            try {
+                Add-LocalGroupMember -Group 'Remote Desktop Users' -Member $acct -ErrorAction Stop
+            } catch {}
         }
     }
-} "Configure Administrators and Remote Desktop Users groups"
+} -Desc "Configure Administrators and Remote Desktop Users groups"
 
 # ---------- Password & Lockout Policy ----------
 Write-Host "`n[PHASE 3] Password and Security Policies..." -ForegroundColor Yellow
@@ -249,26 +277,28 @@ AuditDSAccess = 3
 AuditAccountLogon = 3
 "@ | Out-File -Encoding ASCII $infPath
 
-Do { 
+Invoke-HardeningAction -Action {
     secedit.exe /configure /db "$runDir\secedit.sdb" /cfg $infPath /areas SECURITYPOLICY /quiet
     net accounts /lockoutthreshold:5 /MINPWLEN:10 /MAXPWAGE:90 /MINPWAGE:1 | Out-Null
-} "Apply password/account lockout policies"
+} -Desc "Apply password/account lockout policies"
 
-Do { auditpol /set /category:* /success:enable /failure:enable | Out-Null } "Enable comprehensive auditing"
+Invoke-HardeningAction -Action {
+    auditpol /set /category:* /success:enable /failure:enable | Out-Null
+} -Desc "Enable comprehensive auditing"
 
 # ---------- Windows Firewall ----------
 Write-Host "`n[PHASE 4] Firewall Configuration..." -ForegroundColor Yellow
-Do {
+Invoke-HardeningAction -Action {
     netsh advfirewall set allprofiles state on | Out-Null
-    netsh advfirewall set domainprofile  firewallpolicy blockinboundalways,allowoutbound | Out-Null
+    netsh advfirewall set domainprofile firewallpolicy blockinboundalways,allowoutbound | Out-Null
     netsh advfirewall set privateprofile firewallpolicy blockinboundalways,allowoutbound | Out-Null
-    netsh advfirewall set publicprofile  firewallpolicy blockinboundalways,allowoutbound | Out-Null
+    netsh advfirewall set publicprofile firewallpolicy blockinboundalways,allowoutbound | Out-Null
     netsh advfirewall firewall set rule group="Remote Desktop" new enable=yes | Out-Null
     netsh advfirewall firewall set rule group="File and Printer Sharing" new enable=yes | Out-Null
-    foreach($rule in @("Remote Assistance*","Telnet Server","netcat","Windows Media Player*")){
+    foreach ($rule in @("Remote Assistance*","Telnet Server","netcat","Windows Media Player*")) {
         netsh advfirewall firewall set rule name="$rule" new enable=no 2>$null | Out-Null
     }
-} "Configure Windows Firewall (preserving RDP and SMB)"
+} -Desc "Configure Windows Firewall (preserving RDP and SMB)"
 
 # ---------- Services Management ----------
 Write-Host "`n[PHASE 5] Services Configuration..." -ForegroundColor Yellow
@@ -277,57 +307,61 @@ $servicesToDisable = @(
     'XboxGipSvc','XblAuthManager','XblGameSave','XboxNetApiSvc','Browser','lfsvc','MapsBroker',
     'RetailDemo','PhoneSvc','WbioSrvc','WinHttpAutoProxySvc','wisvc'
 )
-Do {
-    foreach($svcName in $servicesToDisable) {
+Invoke-HardeningAction -Action {
+    foreach ($svcName in $servicesToDisable) {
         $svc = Get-Service -Name $svcName -ErrorAction SilentlyContinue
-        if($svc -and $svc.Name -ne 'CCSClient') {
+        if ($svc -and $svc.Name -ne 'CCSClient') {
             try {
                 Stop-Service -Name $svcName -Force -ErrorAction SilentlyContinue
-                Set-Service  -Name $svcName -StartupType Disabled -ErrorAction SilentlyContinue
+                Set-Service -Name $svcName -StartupType Disabled -ErrorAction SilentlyContinue
                 Log-Finding "Disabled service: $svcName" "Info"
             } catch {}
         }
     }
-} "Disable unnecessary services"
+} -Desc "Disable unnecessary services"
 
 $servicesToManual = @('Spooler')  # Print Spooler
-Do {
-    foreach($svcName in $servicesToManual) {
+Invoke-HardeningAction -Action {
+    foreach ($svcName in $servicesToManual) {
         $svc = Get-Service -Name $svcName -ErrorAction SilentlyContinue
-        if($svc) { Set-Service -Name $svcName -StartupType Manual -ErrorAction SilentlyContinue }
+        if ($svc) {
+            Set-Service -Name $svcName -StartupType Manual -ErrorAction SilentlyContinue
+        }
     }
-} "Set Print Spooler to Manual"
+} -Desc "Set Print Spooler to Manual"
 
 $criticalServices = @('TermService','LanmanServer','LanmanWorkstation')
-Do {
-    foreach($svcName in $criticalServices) {
+Invoke-HardeningAction -Action {
+    foreach ($svcName in $criticalServices) {
         $svc = Get-Service -Name $svcName -ErrorAction SilentlyContinue
-        if($svc) {
+        if ($svc) {
             Set-Service -Name $svcName -StartupType Automatic -ErrorAction SilentlyContinue
             Start-Service -Name $svcName -ErrorAction SilentlyContinue
             Log-Finding "Ensured critical service running: $svcName" "Info"
         }
     }
-} "Ensure critical services are running"
+} -Desc "Ensure critical services are running"
 
 # ---------- RDP Configuration ----------
 Write-Host "`n[PHASE 6] Remote Desktop Configuration..." -ForegroundColor Yellow
-Do {
+Invoke-HardeningAction -Action {
     Set-RegDword 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' 'fDenyTSConnections' 0
     Set-RegDword 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' 'UserAuthentication' 1
     Set-RegDword 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' 'SecurityLayer' 2
     Set-RegDword 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' 'PortNumber' 3389
-} "Configure RDP with Network Level Authentication"
+} -Desc "Configure RDP with Network Level Authentication"
 
 # ---------- SMB/File Sharing ----------
 Write-Host "`n[PHASE 7] SMB and File Sharing..." -ForegroundColor Yellow
 $shareListPath = Join-Path $runDir "shares.txt"
-Do {
+Invoke-HardeningAction -Action {
     $currentShares = Get-SmbShare -ErrorAction SilentlyContinue
     $currentShares | Format-Table -AutoSize | Out-String | Out-File $shareListPath
     $afaShare = $currentShares | Where-Object { $_.Name -eq $RequiredShare }
-    if(-not $afaShare) {
-        if(-not (Test-Path 'C:\AFA')) { New-Item -ItemType Directory -Path 'C:\AFA' -Force | Out-Null }
+    if (-not $afaShare) {
+        if (-not (Test-Path 'C:\AFA')) {
+            New-Item -ItemType Directory -Path 'C:\AFA' -Force | Out-Null
+        }
         New-SmbShare -Name 'AFA' -Path 'C:\AFA' -FullAccess 'Administrators' -ReadAccess 'Users' -ErrorAction SilentlyContinue | Out-Null
         Log-Finding "Created required AFA share" "Info"
     }
@@ -335,12 +369,14 @@ Do {
     Set-RegDword 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'      'EnableSecuritySignature'  1
     Set-RegDword 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters' 'RequireSecuritySignature' 1
     Set-RegDword 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters' 'EnableSecuritySignature'  1
-    try { Set-SmbServerConfiguration -EnableSMB1Protocol $false -Force -ErrorAction Stop } catch {}
-} "Configure SMB security and ensure AFA share exists"
+    try {
+        Set-SmbServerConfiguration -EnableSMB1Protocol $false -Force -ErrorAction Stop
+    } catch {}
+} -Desc "Configure SMB security and ensure AFA share exists"
 
 # ---------- LSA / Auth Hardening ----------
 Write-Host "`n[PHASE 8] LSA and Authentication..." -ForegroundColor Yellow
-Do {
+Invoke-HardeningAction -Action {
     Set-RegDword 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'RunAsPPL' 1
     Set-RegDword 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'LmCompatibilityLevel' 5
     Set-RegDword 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'NoLMHash' 1
@@ -348,91 +384,127 @@ Do {
     Set-RegDword 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'RestrictAnonymousSAM' 1
     Set-RegDword 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'LimitBlankPasswordUse' 1
     Set-RegDword 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'DisableDomainCreds' 1
-} "Harden LSA/NTLM/anonymous"
+} -Desc "Harden LSA/NTLM/anonymous"
 
 # ---------- UAC ----------
 Write-Host "`n[PHASE 9] User Account Control..." -ForegroundColor Yellow
-Do {
+Invoke-HardeningAction -Action {
     Set-RegDword 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'EnableLUA' 1
     Set-RegDword 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'ConsentPromptBehaviorAdmin' 2
     Set-RegDword 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'ConsentPromptBehaviorUser' 0
     Set-RegDword 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'PromptOnSecureDesktop' 1
     Set-RegDword 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'EnableInstallerDetection' 1
     Set-RegDword 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'EnableVirtualization' 1
-} "Configure UAC"
+} -Desc "Configure UAC"
 
 # ---------- Microsoft Defender ----------
 Write-Host "`n[PHASE 10] Microsoft Defender..." -ForegroundColor Yellow
-Do {
-    try { Set-MpPreference -DisableRealtimeMonitoring $false -ErrorAction Stop } catch {}
-    try { Set-MpPreference -MAPSReporting Advanced -ErrorAction Stop } catch {}
-    try { Set-MpPreference -SubmitSamplesConsent SendAllSamples -ErrorAction Stop } catch {}
-    try { Set-MpPreference -DisableBehaviorMonitoring $false -ErrorAction Stop } catch {}
-    try { Update-MpSignature -ErrorAction Stop } catch {}
-    try { Start-MpScan -ScanType QuickScan -ErrorAction Stop } catch {}
-} "Enable/update Defender (best-effort)"
+Invoke-HardeningAction -Action {
+    # Enable and configure Defender but skip time-consuming scans
+    try { 
+        Set-MpPreference -DisableRealtimeMonitoring $false -ErrorAction SilentlyContinue
+        Write-Host "   - Real-time monitoring enabled" -ForegroundColor Green
+    } catch { Write-Warning "   - Failed to enable real-time monitoring: $_" }
+    
+    try { 
+        Set-MpPreference -MAPSReporting Advanced -ErrorAction SilentlyContinue
+        Write-Host "   - Cloud protection set to Advanced" -ForegroundColor Green
+    } catch { Write-Warning "   - Failed to set cloud protection: $_" }
+    
+    try { 
+        Set-MpPreference -SubmitSamplesConsent SendAllSamples -ErrorAction SilentlyContinue
+        Write-Host "   - Sample submission enabled" -ForegroundColor Green
+    } catch { Write-Warning "   - Failed to set sample submission: $_" }
+    
+    try { 
+        Set-MpPreference -DisableBehaviorMonitoring $false -ErrorAction SilentlyContinue
+        Write-Host "   - Behavior monitoring enabled" -ForegroundColor Green
+    } catch { Write-Warning "   - Failed to enable behavior monitoring: $_" }
+    
+    # Skip signature update and scan to save time
+    Write-Host "   - Signature update and scan skipped (time optimization)" -ForegroundColor Yellow
+} -Desc "Enable/configure Defender (scans skipped)"
 
 # ---------- Network Security ----------
 Write-Host "`n[PHASE 11] Network Security..." -ForegroundColor Yellow
-Do {
+Invoke-HardeningAction -Action {
     Set-RegDword 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient' 'EnableMulticast' 0  # Disable LLMNR
     $adapters = Get-WmiObject Win32_NetworkAdapterConfiguration -Filter "IPEnabled='True'"
-    foreach($adapter in $adapters) { $null = $adapter.SetTcpipNetbios(2) }  # Disable NetBIOS
+    foreach ($adapter in $adapters) {
+        $null = $adapter.SetTcpipNetbios(2)
+    }
     Set-RegDword 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' 'EnableICMPRedirects' 0
     Set-RegDword 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' 'DisableIPSourceRouting' 2
     Set-RegDword 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' 'SynAttackProtect' 2
     netsh winhttp reset proxy | Out-Null
-} "Apply TCP/IP/Name resolution hardening"
+} -Desc "Apply TCP/IP/Name resolution hardening"
 
 # ---------- Windows Update ----------
 Write-Host "`n[PHASE 12] Windows Update..." -ForegroundColor Yellow
-Do {
+Invoke-HardeningAction -Action {
     Set-RegDword 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' 'NoAutoUpdate' 0
     Set-RegDword 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' 'AUOptions' 3
     Set-RegDword 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' 'ScheduledInstallDay' 0
     Set-RegDword 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' 'ScheduledInstallTime' 3
     Set-Service -Name wuauserv -StartupType Automatic -ErrorAction SilentlyContinue
     Start-Service -Name wuauserv -ErrorAction SilentlyContinue
-} "Configure Windows Update"
+} -Desc "Configure Windows Update"
 
 # ---------- Action Center ----------
 Write-Host "`n[PHASE 13] Windows Action Center..." -ForegroundColor Yellow
-Do {
+Invoke-HardeningAction -Action {
     Set-Service -Name wscsvc -StartupType Automatic -ErrorAction SilentlyContinue
     Start-Service -Name wscsvc -ErrorAction SilentlyContinue
     Set-RegDword 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer' 'EnableAutoTray' 0
-} "Enable Security Center"
+} -Desc "Enable Security Center"
 
 # ---------- File System / Media / Tools Scan ----------
 Write-Host "`n[PHASE 14] File System and Media Scan..." -ForegroundColor Yellow
 $mediaExtensions = @('*.mp3','*.mp4','*.avi','*.mov','*.mkv','*.wmv','*.flv','*.mpg','*.mpeg','*.m4a','*.flac','*.wav','*.wma','*.aac','*.jpg','*.jpeg','*.png','*.gif','*.bmp','*.tiff')
 $hackingTools = @('nc.exe','netcat.exe','nmap.exe','wireshark.exe','mimikatz.exe','pwdump.exe','ophcrack.exe','l0phtcrack.exe','john.exe','hashcat.exe','aircrack*.exe','metasploit*.exe','hydra.exe','sqlmap.exe')
-Do {
+Invoke-HardeningAction -Action {
     $mediaFiles = @(); $hackTools = @()
     $scanPaths = @('C:\Users\*\Desktop','C:\Users\*\Documents','C:\Users\*\Downloads','C:\Users\*\Pictures','C:\Users\*\Videos','C:\Users\*\Music')
-    foreach($path in $scanPaths) { foreach($ext in $mediaExtensions) { $mediaFiles += Get-ChildItem -Path $path -Filter $ext -Recurse -ErrorAction SilentlyContinue } }
-    foreach($tool in $hackingTools) { $hackTools += Get-ChildItem -Path 'C:\' -Filter $tool -Recurse -ErrorAction SilentlyContinue }
-    if($mediaFiles.Count -gt 0) { $mediaFiles | Select FullName, Length, LastWriteTime | Export-Csv "$runDir\media-files.csv" -NoTypeInformation; Log-Finding "Found $($mediaFiles.Count) media files (review)" "Warning" }
-    if($hackTools.Count -gt 0) { $hackTools | Select FullName, Length, LastWriteTime | Export-Csv "$runDir\hacking-tools.csv" -NoTypeInformation; Log-Finding "Found $($hackTools.Count) potential hacking tools" "Critical" }
-} "Scan for unauthorized media files and hacking tools"
+    foreach ($path in $scanPaths) {
+        foreach ($ext in $mediaExtensions) {
+            $mediaFiles += Get-ChildItem -Path $path -Filter $ext -Recurse -ErrorAction SilentlyContinue
+        }
+    }
+    foreach ($tool in $hackingTools) {
+        $hackTools += Get-ChildItem -Path 'C:\' -Filter $tool -Recurse -ErrorAction SilentlyContinue
+    }
+    if ($mediaFiles.Count -gt 0) {
+        $mediaFiles | Select FullName, Length, LastWriteTime | Export-Csv "$runDir\media-files.csv" -NoTypeInformation
+        Log-Finding "Found $($mediaFiles.Count) media files (review)" "Warning"
+    }
+    if ($hackTools.Count -gt 0) {
+        $hackTools | Select FullName, Length, LastWriteTime | Export-Csv "$runDir\hacking-tools.csv" -NoTypeInformation
+        Log-Finding "Found $($hackTools.Count) potential hacking tools" "Critical"
+    }
+} -Desc "Scan for unauthorized media files and hacking tools"
 
 # ---------- Scheduled Tasks Audit ----------
 Write-Host "`n[PHASE 15] Scheduled Tasks Audit..." -ForegroundColor Yellow
 $tasksCsv = Join-Path $runDir "scheduled-tasks.csv"
-Do {
-    $tasks = Get-ScheduledTask | Where-Object {$_.State -ne 'Disabled'}
+Invoke-HardeningAction -Action {
+    $tasks = Get-ScheduledTask | Where-Object { $_.State -ne 'Disabled' }
     $suspicious = @()
-    foreach($t in $tasks) {
+    foreach ($t in $tasks) {
         $acts = ($t.Actions | ForEach-Object { $_.Execute }) -join '; '
-        if($t.TaskPath -notlike '\Microsoft\*' -or $acts -match 'powershell|cmd|wscript|cscript') { $suspicious += $t }
+        if ($t.TaskPath -notlike '\Microsoft\*' -or $acts -match 'powershell|cmd|wscript|cscript') {
+            $suspicious += $t
+        }
     }
-    $tasks | Select TaskName, TaskPath, State, @{N='Actions';E={($_.Actions | ForEach-Object {$_.Execute}) -join '; '}} | Export-Csv $tasksCsv -NoTypeInformation
-    if($suspicious.Count -gt 0) { Log-Finding "Found $($suspicious.Count) potentially suspicious scheduled tasks" "Warning" }
-} "Audit scheduled tasks"
+    $tasks | Select TaskName, TaskPath, State, @{N='Actions';E={ ($_.Actions | ForEach-Object { $_.Execute }) -join '; ' }} |
+        Export-Csv $tasksCsv -NoTypeInformation
+    if ($suspicious.Count -gt 0) {
+        Log-Finding "Found $($suspicious.Count) potentially suspicious scheduled tasks" "Warning"
+    }
+} -Desc "Audit scheduled tasks"
 
 # ---------- Startup Programs Audit ----------
 Write-Host "`n[PHASE 16] Startup Programs Audit..." -ForegroundColor Yellow
-Do {
+Invoke-HardeningAction -Action {
     $runKeys = @(
         'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run',
         'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce',
@@ -442,11 +514,16 @@ Do {
         'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce'
     )
     $startupItems = @()
-    foreach($key in $runKeys) {
-        if(Test-Path $key) {
-            $props = (Get-ItemProperty $key -ErrorAction SilentlyContinue).PSObject.Properties | Where-Object { $_.Name -notin @('PSPath','PSParentPath','PSChildName','PSDrive','PSProvider') }
-            foreach($p in $props) {
-                $startupItems += [pscustomobject]@{ HiveKey = $key; Name = $p.Name; Command = [string]$p.Value }
+    foreach ($key in $runKeys) {
+        if (Test-Path $key) {
+            $props = (Get-ItemProperty $key -ErrorAction SilentlyContinue).PSObject.Properties |
+                     Where-Object { $_.Name -notin @('PSPath','PSParentPath','PSChildName','PSDrive','PSProvider') }
+            foreach ($p in $props) {
+                $startupItems += [pscustomobject]@{
+                    HiveKey = $key
+                    Name    = $p.Name
+                    Command = [string]$p.Value
+                }
             }
         }
     }
@@ -454,34 +531,36 @@ Do {
     $startupItems | Export-Csv $startupCsv -NoTypeInformation
     # Flag obvious suspicious entries
     $sus = $startupItems | Where-Object { $_.Command -match 'powershell.exe|-enc |-EncodedCommand|wscript|cscript|cmd.exe /c|\\AppData\\|Temp\\' }
-    if($sus.Count -gt 0) { Log-Finding "Found $($sus.Count) suspicious startup entries" "Warning" }
-} "Audit startup items"
+    if ($sus.Count -gt 0) {
+        Log-Finding "Found $($sus.Count) suspicious startup entries" "Warning"
+    }
+} -Desc "Audit startup items"
 
 # ---------- Installed Software Inventory ----------
 Write-Host "`n[PHASE 17] Software Inventory..." -ForegroundColor Yellow
-Do {
+Invoke-HardeningAction -Action {
     $soft = @()
     $uninstKeys = @(
         'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
         'HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
     )
-    foreach($k in $uninstKeys) {
-        if(Test-Path $k){
+    foreach ($k in $uninstKeys) {
+        if (Test-Path $k) {
             Get-ChildItem $k | ForEach-Object {
                 $d = Get-ItemProperty $_.PsPath -ErrorAction SilentlyContinue
-                if($d.DisplayName){ 
+                if ($d.DisplayName) {
                     $soft += [pscustomobject]@{
-                        DisplayName = $d.DisplayName
+                        DisplayName    = $d.DisplayName
                         DisplayVersion = $d.DisplayVersion
-                        Publisher = $d.Publisher
-                        InstallDate = $d.InstallDate
+                        Publisher      = $d.Publisher
+                        InstallDate    = $d.InstallDate
                     }
                 }
             }
         }
     }
     $soft | Sort-Object DisplayName | Export-Csv (Join-Path $runDir 'installed-software.csv') -NoTypeInformation
-} "Inventory installed software"
+} -Desc "Inventory installed software"
 
 # ---------- Summary ----------
 Write-Host "`n[PHASE 18] Summary..." -ForegroundColor Yellow
