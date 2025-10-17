@@ -1,1 +1,1 @@
-diddy party not the comp sci patriots script
+not the comp sci patriots script
