@@ -1,19 +1,24 @@
 #!/bin/bash
-
 # ==================================================
 # CyberPatriot Mint 21 Hardening Script (Scenario-Tuned)
-# Competition-Optimized Version 2.2 (SAFE for README)
+# Competition-Optimized Version 2.3 (SAFE for README)
 # ==================================================
-# Key scenario mappings:
-#  - Mint 21 only: use official repos; LightDM must remain DM
-#  - Install & run Apache; do NOT harden it beyond install/start
-#  - SSHD is CRITICAL: must be enabled; all authorized users may SSH
+# Scenario mappings:
+#  - Mint 21 only; LightDM must remain DM
+#  - Install & run Apache; DO NOT over-harden Apache
+#  - SSHD is CRITICAL: enabled; all authorized users may SSH
 #  - Create/keep ONLY authorized accounts; set admin passwords AS GIVEN
-#  - Regular users get a strong temporary password (not auto-login user)
-#  - Remove/quarantine non-work media; remove hacking tools
-#  - Do NOT stop/disable CyberPatriot scoring/CCS client
-#  - Triple-checked: current login cannot be locked out
+#  - Current auto-login admin's password is NOT changed (toggle below)
+#  - Remove hacking tools; quarantine non-work media
+#  - Never touch CCS/Scoring client or LightDM
+#  - Backups + one-click REVERT; phase summaries + final banner
 # ==================================================
+
+# ---- Guards: must run with bash 4+, not sh; normalize CRLF if present ----
+if [ -z "${BASH_VERSION:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+  echo "This script requires bash 4+. Run: sudo bash ./harden.sh"; exit 1; fi
+if [ "$(ps -p $$ -o comm=)" != "bash" ]; then
+  echo "Please run with: sudo bash ./harden.sh"; exit 1; fi
 
 set -Eeuo pipefail
 
@@ -21,10 +26,11 @@ set -Eeuo pipefail
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 
 # ================= COMPETITION CONFIG =================
-COMPETITION_MODE="yes"         # yes = no prompts
-SCENARIO="web_server"          # per README: must have Apache installed & running
-DISABLE_IPV6="no"              # keep IPv6 unless image says otherwise
-MEDIA_QUARANTINE="yes"         # README forbids non-work media -> quarantine it
+COMPETITION_MODE="yes"          # yes = auto actions
+SCENARIO="web_server"           # per README: Apache must be installed & running
+DISABLE_IPV6="no"               # keep IPv6 unless README changes it
+MEDIA_QUARANTINE="yes"          # README forbids non-work media -> quarantine
+SKIP_CURRENT_ADMIN_PW_CHANGE="yes"  # keep auto-login admin password unchanged
 
 # ------------------------------ Root/User Context ------------------------------
 if [[ $EUID -ne 0 ]]; then echo -e "${RED}[-] Run as root (sudo).${NC}"; exit 1; fi
@@ -33,7 +39,7 @@ if [[ -z "${CURRENT_USER}" ]]; then echo -e "${RED}[-] Could not determine invok
 CURRENT_TTY=$(tty || true)
 
 echo -e "${GREEN}╔═══════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║   CyberPatriot Mint 21 Hardening Script v2.2  ║${NC}"
+echo -e "${GREEN}║   CyberPatriot Mint 21 Hardening Script v2.3  ║${NC}"
 echo -e "${GREEN}╚═══════════════════════════════════════════════╝${NC}"
 echo -e "${BLUE}[*] Competition Mode: ${COMPETITION_MODE}${NC}"
 echo -e "${BLUE}[*] Scenario Type: ${SCENARIO}${NC}"
@@ -76,19 +82,19 @@ AUTHORIZED_REG_USERS=(
   jrobinson gsheldern coshearn jlaslen kshelvern jtholdon belkarn bharper
 )
 
-# Build global allow/keep lists
+# Build lists
 ADMINISTRATORS=( "${!ADMIN_PASS[@]}" )
 AUTHORIZED_USERS=( "${ADMINISTRATORS[@]}" "${AUTHORIZED_REG_USERS[@]}" )
-DEFAULT_USER_PASS='Ecorp#2025!!'   # 12 chars; letters+digits+specials
-AUTO_LOGIN_USER="${CURRENT_USER}"  # per README: do not *need* to change this password
+DEFAULT_USER_PASS='Ecorp#2025!!'   # 12+ chars; letters+digits+specials
+AUTO_LOGIN_USER="${CURRENT_USER}"  # safest default in CP images
 
-# Group authorizations (tight + include current competitor so you never lose sudo)
+# Group authorizations (tight + include current competitor for safety)
 declare -A GROUPS_AUTHORIZED=(
   ["adm"]="syslog,${CURRENT_USER}"
-  ["sudo"]="${ADMINISTRATORS[*]} ${CURRENT_USER}"
+  ["sudo"]="$(printf '%s ' "${ADMINISTRATORS[@]}")${CURRENT_USER}"
 )
 
-# System users to set nologin (unchanged)
+# System users to set nologin
 declare -A SYSTEM_USERS=(
   [daemon]="/usr/sbin/nologin" [bin]="/usr/sbin/nologin" [sys]="/usr/sbin/nologin"
   [sync]="/bin/sync" [games]="/usr/sbin/nologin" [man]="/usr/sbin/nologin"
@@ -104,26 +110,16 @@ PASS_MAX_DAYS=90; PASS_MIN_DAYS=7; PASS_WARN_AGE=14; MIN_PASS_LENGTH=12
 # Services
 svc_exists(){ systemctl list-unit-files --type=service | awk '{print $1}' | grep -qx "${1}.service"; }
 svc_active(){ systemctl is-active --quiet "$1"; }
-REQUIRED_SERVICES=(ssh)  # SSHD is critical per README; use service name 'ssh'
-
-# If Apache present/required by scenario, keep it enabled
-if [[ "$SCENARIO" == "web_server" ]]; then
-  REQUIRED_SERVICES+=("apache2")
-fi
+REQUIRED_SERVICES=(ssh)  # sshd is critical
+[[ "$SCENARIO" == "web_server" ]] && REQUIRED_SERVICES+=("apache2")
 
 # Services we often disable (never touch CCS/Scoring; never touch LightDM)
 ALWAYS_DISABLE=(avahi-daemon cups bluetooth cups-browsed whoopsie speech-dispatcher modemmanager mobile-broadband-provider-info)
 SUSPICIOUS_SERVICES=(vsftpd pure-ftpd proftpd nginx lighttpd mysql postgresql smbd nmbd snmpd xinetd inetd rpcbind bind9 dnsmasq slapd nfs-kernel-server telnet)
 SERVICE_SKIP_PATTERNS=("ccs" "scoring" "cyberpatriot" "score" "lightdm")  # DO NOT touch these
-
 skip_service(){
-  local s="$1"
-  # Required?
-  [[ " ${REQUIRED_SERVICES[*]} " == *" $s "* ]] && return 0
-  # Skip patterns
-  for p in "${SERVICE_SKIP_PATTERNS[@]}"; do
-    if [[ "$s" =~ $p ]]; then return 0; fi
-  done
+  local s="$1"; [[ " ${REQUIRED_SERVICES[*]} " == *" $s "* ]] && return 0
+  for p in "${SERVICE_SKIP_PATTERNS[@]}"; do [[ "$s" =~ $p ]] && return 0; done
   return 1
 }
 
@@ -164,25 +160,66 @@ sed -i "s|__BD__|${BACKUP_DIR}|g" "${BACKUP_DIR}/REVERT.sh"
 chmod 700 "${BACKUP_DIR}/REVERT.sh"
 echo -e "${GREEN}[+] REVERT helper created: ${BACKUP_DIR}/REVERT.sh${NC}"
 
+# ======================== Helper funcs to prevent spam ========================
+in_group() { id -nG "$1" 2>/dev/null | tr ' ' '\n' | grep -qx "$2"; }
+current_shell() { getent passwd "$1" | awk -F: '{print $7}'; }
+shadow_hash() { awk -F: -v u="$1" '$1==u{print $2}' /etc/shadow 2>/dev/null; }
+
+set_pass_if_needed() {
+  local u="$1" pw="$2"
+  [[ "$pw" == "__SKIP__" ]] && return 0
+  local want cur
+  want="$(openssl passwd -6 "$pw")"
+  cur="$(shadow_hash "$u")"
+  # Set only if different and not locked
+  if [[ -z "$cur" || ( "$cur" != "$want" && "$cur" != '!'* && "$cur" != '*'* ) ]]; then
+    usermod -p "$want" "$u"
+  fi
+}
+
+ensure_shell() {
+  local u="$1" sh="${2:-/bin/bash}"
+  if [[ "$(current_shell "$u")" != "$sh" ]]; then usermod -s "$sh" "$u"; fi
+}
+
+ensure_user() {
+  local u="$1" pw="$2" sudo_flag="${3:-no}"
+  if id "$u" &>/dev/null; then
+    set_pass_if_needed "$u" "$pw"
+  else
+    adduser --disabled-password --gecos "" "$u"
+    [[ "$pw" != "__SKIP__" ]] && usermod -p "$(openssl passwd -6 "$pw")" "$u"
+  fi
+  ensure_shell "$u" /bin/bash
+  if [[ "$sudo_flag" == "yes" ]] && ! in_group "$u" sudo; then usermod -aG sudo "$u"; fi
+}
+
+expire_if_needed() {
+  local u="$1"
+  local lastchg
+  lastchg=$(awk -F: -v u="$u" '$1==u{print $3}' /etc/shadow 2>/dev/null)
+  if [[ -n "$lastchg" && "$lastchg" -ne 0 ]]; then
+    passwd -e "$u" >/dev/null 2>&1 || chage -d 0 "$u" >/dev/null 2>&1 || true
+  fi
+}
+
 # ==================================================
-# PHASE 1: APT (sequential; Mint 21 repos)
+# PHASE 1: Packages
 # ==================================================
-export DEBIAN_FRONTEND=noninteractive
 echo -e "\n${BLUE}╔═══════════════════════════════════════════════╗${NC}"
 echo -e "${BLUE}║          PHASE 1: PACKAGE MANAGEMENT          ║${NC}"
 echo -e "${BLUE}╚═══════════════════════════════════════════════╝${NC}"
 
+export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y ufw libpam-pwquality auditd audispd-plugins openssl
-# Scenario packages:
 apt-get install -y openssh-server apache2 chromium gimp inkscape scribus || true
-
 apt-get upgrade -y
 apt-get autoremove -y
 apt-get autoclean -y
 
 # ==================================================
-# PHASE 2: SUDOERS SAFETY
+# PHASE 2: Sudoers safety
 # ==================================================
 echo -e "\n${BLUE}╔═══════════════════════════════════════════════╗${NC}"
 echo -e "${BLUE}║      PHASE 2: SUDOERS SAFETY & CLEANUP        ║${NC}"
@@ -203,57 +240,55 @@ visudo -cf /etc/sudoers >/dev/null 2>&1 || cp -a "${BACKUP_DIR}/sudoers.pre-nopa
 usermod -aG sudo "${CURRENT_USER}" || true
 
 # ==================================================
-# PHASE 3: USER MANAGEMENT (Scenario accounts)
+# PHASE 3: User management
 # ==================================================
 echo -e "\n${BLUE}╔═══════════════════════════════════════════════╗${NC}"
 echo -e "${BLUE}║            PHASE 3: USER MANAGEMENT           ║${NC}"
 echo -e "${BLUE}╚═══════════════════════════════════════════════╝${NC}"
 
-# Helpers
-set_pass_hash(){ local u="$1" p="$2"; local h; h=$(openssl passwd -6 "$p"); usermod -p "$h" "$u"; }
-ensure_user(){
-  local u="$1" pw="$2" sudo_flag="${3:-no}"
-  if id "$u" &>/dev/null; then
-    [[ "$u" != "$AUTO_LOGIN_USER" || "$pw" != "__SKIP__" ]] && [[ -n "$pw" && "$pw" != "__SKIP__" ]] && set_pass_hash "$u" "$pw" || true
-  else
-    adduser --disabled-password --gecos "" "$u"
-    [[ -n "$pw" && "$pw" != "__SKIP__" ]] && set_pass_hash "$u" "$pw"
-  fi
-  [[ "$sudo_flag" == "yes" ]] && usermod -aG sudo "$u" || true
-  usermod -s /bin/bash "$u" 2>/dev/null || true
-}
-
-# System shells
+# Lock system shells
 for u in "${!SYSTEM_USERS[@]}"; do id "$u" &>/dev/null && usermod -s "${SYSTEM_USERS[$u]}" "$u" 2>/dev/null || true; done
 
-# Create admins with scenario passwords (EXACT), including current user in sudo for safety
+# Create admins (respect SKIP_CURRENT_ADMIN_PW_CHANGE for auto-login admin)
 for a in "${ADMINISTRATORS[@]}"; do
   pw="${ADMIN_PASS[$a]}"
+  if [[ "$SKIP_CURRENT_ADMIN_PW_CHANGE" == "yes" && "$a" == "$AUTO_LOGIN_USER" ]]; then
+    pw="__SKIP__"; echo "[*] Skipping password change for current auto-login admin: $a"
+  fi
   ensure_user "$a" "$pw" "yes"
 done
 usermod -aG sudo "${CURRENT_USER}" || true
 
-# Create authorized regular users with strong temp password (skip if auto-login user is in this set)
+# Create authorized regular users with strong temp password (expire on next login)
 for u in "${AUTHORIZED_REG_USERS[@]}"; do
   if [[ "$u" == "$AUTO_LOGIN_USER" ]]; then
     ensure_user "$u" "__SKIP__" "no"
   else
     ensure_user "$u" "$DEFAULT_USER_PASS" "no"
-    passwd -e "$u" 2>/dev/null || chage -d 0 "$u" 2>/dev/null || true
+    expire_if_needed "$u"
   fi
 done
 
-# Lockdown password aging and home perms
+# Password aging for all real users
 for u in $(awk -F: '$3 >= 1000 && $1 != "nobody" {print $1}' /etc/passwd); do
   chage --maxdays "$PASS_MAX_DAYS" --mindays "$PASS_MIN_DAYS" --warndays "$PASS_WARN_AGE" "$u" 2>/dev/null || true
 done
+
+# Secure home directories (use actual primary group)
 for d in /home/*; do
   [[ -d "$d" ]] || continue
   u=$(basename "$d")
-  if id "$u" &>/dev/null; then chmod 750 "$d"; chown "$u:$u" "$d"; fi
+  if id "$u" &>/dev/null; then
+    pg=$(id -gn "$u" 2>/dev/null || echo "$u")
+    chmod 750 "$d"
+    chown "$u:$pg" "$d" 2>/dev/null || true
+  else
+    echo -e "${YELLOW}[!] Orphaned home: $d${NC}"
+    [[ "$COMPETITION_MODE" == "yes" ]] && rm -rf "$d"
+  fi
 done
 
-# Remove unauthorized human users (UID>=1000) EXCEPT authorized + current + root
+# Remove unauthorized human users
 PROTECT_USERS=("root" "${CURRENT_USER}" "${AUTHORIZED_USERS[@]}")
 is_protect(){ local x="$1"; for p in "${PROTECT_USERS[@]}"; do [[ "$x" == "$p" ]] && return 0; done; return 1; }
 DELETED_USERS=0
@@ -269,23 +304,18 @@ done
 echo -e "${YELLOW}[*] Pruning sudo group membership...${NC}"
 ALLOW_SUDO=( "${ADMINISTRATORS[@]}" "${CURRENT_USER}" )
 CUR_SUDO=$(getent group sudo | awk -F: '{print $4}' | tr ',' ' ')
+# Remove unexpected members
 for u in $CUR_SUDO; do
   keep=false; for a in "${ALLOW_SUDO[@]}"; do [[ "$u" == "$a" ]] && keep=true; done
-  $keep || deluser "$u" sudo 2>/dev/null || true
+  $keep || deluser "$u" sudo >/dev/null 2>&1 || true
 done
-
-# Enforce group membership per GROUPS_AUTHORIZED
-for grp in "${!GROUPS_AUTHORIZED[@]}"; do
-  if getent group "$grp" >/dev/null; then
-    # Normalize spaces -> commas
-    members="$(echo "${GROUPS_AUTHORIZED[$grp]}" | tr ' ' ',' | sed 's/,,\+/,/g; s/^,//; s/,$//')"
-    gpasswd -M "$members" "$grp" 2>/dev/null || true
-    echo -e "${GREEN}[+] $grp => $members${NC}"
-  fi
+# Ensure required members are present
+for u in "${ALLOW_SUDO[@]}"; do
+  id "$u" &>/dev/null && ! in_group "$u" sudo && usermod -aG sudo "$u"
 done
 
 # ==================================================
-# PHASE 4: PAM & PASSWORD QUALITY
+# PHASE 4: PAM & password quality
 # ==================================================
 echo -e "\n${BLUE}╔═══════════════════════════════════════════════╗${NC}"
 echo -e "${BLUE}║      PHASE 4: PAM & PASSWORD HARDENING        ║${NC}"
@@ -299,7 +329,7 @@ grep -q '^ENCRYPT_METHOD' /etc/login.defs && sed -i 's/^ENCRYPT_METHOD.*/ENCRYPT
 grep -q '^PASS_MIN_LEN' /etc/login.defs || echo "PASS_MIN_LEN   ${MIN_PASS_LENGTH}" >> /etc/login.defs
 
 cat > /etc/security/pwquality.conf << EOF
-# CyberPatriot Password Quality (root may bypass via direct hash)
+# CyberPatriot Password Quality
 minlen = ${MIN_PASS_LENGTH}
 dcredit = -1
 ucredit = -1
@@ -334,13 +364,12 @@ grep -q 'pam_pwhistory.so' /etc/pam.d/common-password || \
 command -v faillock >/dev/null 2>&1 && faillock --user "${CURRENT_USER}" --reset || true
 
 # ==================================================
-# PHASE 5: SERVICE MANAGEMENT (keep ssh & apache)
+# PHASE 5: Services (keep ssh & apache)
 # ==================================================
 echo -e "\n${BLUE}╔═══════════════════════════════════════════════╗${NC}"
 echo -e "${BLUE}║           PHASE 5: SERVICE MANAGEMENT         ║${NC}"
 echo -e "${BLUE}╚═══════════════════════════════════════════════╝${NC}"
 
-# Ensure ssh & apache are enabled and running
 systemctl enable --now ssh 2>/dev/null || systemctl enable --now sshd 2>/dev/null || true
 if dpkg -l | grep -q '^ii\s\+apache2'; then systemctl enable --now apache2 2>/dev/null || true; fi
 
@@ -361,7 +390,7 @@ done
 echo -e "${GREEN}[+] Disabled $DISABLED_COUNT services${NC}"
 
 # ==================================================
-# PHASE 6: REMOVE TOOLS/GAMES
+# PHASE 6: Remove tools/games
 # ==================================================
 echo -e "\n${BLUE}╔═══════════════════════════════════════════════╗${NC}"
 echo -e "${BLUE}║      PHASE 6: REMOVE MALICIOUS SOFTWARE       ║${NC}"
@@ -380,7 +409,7 @@ apt-get autoremove -y 2>/dev/null || true
 apt-get autoclean -y 2>/dev/null || true
 
 # ==================================================
-# PHASE 7: SSH HARDENING (allow all authorized users)
+# PHASE 7: SSH hardening
 # ==================================================
 echo -e "\n${BLUE}╔═══════════════════════════════════════════════╗${NC}"
 echo -e "${BLUE}║             PHASE 7: SSH HARDENING            ║${NC}"
@@ -400,21 +429,25 @@ if [[ -f "$SSH_CONFIG" ]]; then
   sed -i 's/^#*StrictModes.*/StrictModes yes/' "$SSH_CONFIG"
   sed -i '/^#*UsePrivilegeSeparation/d' "$SSH_CONFIG"
   sed -i '/^#*Protocol[[:space:]]\+2/d' "$SSH_CONFIG"
-  # Build AllowUsers from authorized admins + regular users
-  ALLOW_LIST=("${ADMINISTRATORS[@]}" "${AUTHORIZED_REG_USERS[@]}")
-  # Deduplicate
-  mapfile -t ALLOW_UNIQ < <(printf "%s\n" "${ALLOW_LIST[@]}" | awk '!x[$0]++')
+
+  # Allow all authorized admins + regular users (dedup, no mapfile)
+  ALLOW_LIST=( "${ADMINISTRATORS[@]}" "${AUTHORIZED_REG_USERS[@]}" )
+  ALLOW_UNIQ=()
+  for u in "${ALLOW_LIST[@]}"; do
+    [[ " ${ALLOW_UNIQ[*]} " == *" $u "* ]] || ALLOW_UNIQ+=("$u")
+  done
   if grep -q '^AllowUsers' "$SSH_CONFIG"; then
     sed -i "s#^AllowUsers.*#AllowUsers ${ALLOW_UNIQ[*]}#" "$SSH_CONFIG"
   else
     echo "AllowUsers ${ALLOW_UNIQ[*]}" >> "$SSH_CONFIG"
   fi
+
   systemctl restart ssh || { echo -e "${RED}[!] ssh restart failed—reverting sshd_config${NC}"; cp -a "${BACKUP_DIR}/etc/ssh/sshd_config" "$SSH_CONFIG"; systemctl restart ssh || true; }
   echo -e "${GREEN}[+] SSH hardened and allows authorized users${NC}"
 fi
 
 # ==================================================
-# PHASE 8: FIREWALL (UFW)
+# PHASE 8: Firewall (UFW)
 # ==================================================
 echo -e "\n${BLUE}╔═══════════════════════════════════════════════╗${NC}"
 echo -e "${BLUE}║        PHASE 8: FIREWALL CONFIGURATION        ║${NC}"
@@ -426,7 +459,6 @@ ufw default deny incoming
 ufw default allow outgoing
 ufw default deny routed
 ufw allow 22/tcp comment 'SSH'
-# Open Apache if installed
 if dpkg -l | grep -q '^ii\s\+apache2'; then
   ufw allow 80/tcp  comment 'HTTP'
   ufw allow 443/tcp comment 'HTTPS'
@@ -435,7 +467,7 @@ ufw logging high
 ufw --force enable || true
 
 # ==================================================
-# PHASE 9: KERNEL HARDENING
+# PHASE 9: Kernel hardening
 # ==================================================
 echo -e "\n${BLUE}╔═══════════════════════════════════════════════╗${NC}"
 echo -e "${BLUE}║           PHASE 9: KERNEL HARDENING           ║${NC}"
@@ -475,7 +507,7 @@ fi
 sysctl -p 2>/dev/null || true
 
 # ==================================================
-# PHASE 10: FILE PERMS & CLEANUP
+# PHASE 10: File perms & cleanup
 # ==================================================
 echo -e "\n${BLUE}╔═══════════════════════════════════════════════╗${NC}"
 echo -e "${BLUE}║     PHASE 10: FILE PERMISSIONS & CLEANUP      ║${NC}"
@@ -500,7 +532,7 @@ find /var/tmp -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + 2>/dev/null || true
 find /dev/shm -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + 2>/dev/null || true
 
 # ==================================================
-# PHASE 11: MEDIA QUARANTINE (per README policy)
+# PHASE 11: Media quarantine (per README policy)
 # ==================================================
 if [[ "$MEDIA_QUARANTINE" == "yes" ]]; then
   echo -e "\n${BLUE}╔═══════════════════════════════════════════════╗${NC}"
@@ -516,7 +548,7 @@ if [[ "$MEDIA_QUARANTINE" == "yes" ]]; then
 fi
 
 # ==================================================
-# PHASE 12: LIGHTDM MUST REMAIN DISPLAY MANAGER
+# PHASE 12: Display manager must remain LightDM
 # ==================================================
 echo -e "\n${BLUE}╔═══════════════════════════════════════════════╗${NC}"
 echo -e "${BLUE}║          PHASE 12: DISPLAY MANAGER (DM)       ║${NC}"
@@ -534,7 +566,7 @@ if [[ -f /etc/X11/default-display-manager ]]; then
 fi
 
 # ==================================================
-# PHASE 13: AUDIT & MONITORING
+# PHASE 13: Audit & monitoring
 # ==================================================
 echo -e "\n${BLUE}╔═══════════════════════════════════════════════╗${NC}"
 echo -e "${BLUE}║          PHASE 13: AUDIT & MONITORING         ║${NC}"
@@ -548,13 +580,12 @@ echo -e "\n${YELLOW}=== Listening services ===${NC}"; ss -tulpn | grep LISTEN ||
 systemctl enable --now auditd 2>/dev/null || true
 
 # ==================================================
-# FINAL: VALIDATIONS & CLEANUP
+# FINAL: Validations & banner
 # ==================================================
 echo -e "\n${BLUE}╔═══════════════════════════════════════════════╗${NC}"
 echo -e "${BLUE}║               FINAL VALIDATION                ║${NC}"
 echo -e "${BLUE}╚═══════════════════════════════════════════════╝${NC}"
 
-# Ensure CURRENT_USER has sudo rights
 if groups "${CURRENT_USER}" | grep -q '\bsudo\b'; then
   echo -e "${GREEN}[✓] ${CURRENT_USER} is in sudo group${NC}"
 else
@@ -562,7 +593,6 @@ else
 fi
 sudo -l -U "${CURRENT_USER}" >/dev/null 2>&1 || echo -e "${YELLOW}[!] Could not validate sudo -U for ${CURRENT_USER}${NC}"
 
-# Remove rescue rule only if safe
 if groups "${CURRENT_USER}" | grep -q '\bsudo\b' && visudo -cf /etc/sudoers >/dev/null 2>&1; then
   rm -f /etc/sudoers.d/99-cp-rescue || true
   echo -e "${GREEN}[+] Removed temporary sudoers rescue file${NC}"
@@ -570,7 +600,6 @@ else
   echo -e "${YELLOW}[!] Keeping rescue sudoers file for safety${NC}"
 fi
 
-# Scoring checklist
 cat > "${BACKUP_DIR}/SCORING_CHECKLIST.txt" << EOF
 CYBERPATRIOT SCORING CHECKLIST
 ================================
@@ -606,11 +635,15 @@ Apps (Mint 21 official):
   - Chromium: $(dpkg -l | awk '/^ii/ && $2=="chromium"{print $3}')
   - GIMP:     $(dpkg -l | awk '/^ii/ && $2=="gimp"{print $3}')
   - Inkscape: $(dpkg -l | awk '/^ii/ && $2=="inkscape"{print $3}')
-  - Scribus:  $(dpkg -l | awk '/^ii/ && $2=="scribus"{print $3})
+  - Scribus:  $(dpkg -l | awk '/^ii/ && $2=="scribus"{print $3}')
 
 Backups & Revert:
   - Backups dir: ${BACKUP_DIR}
   - Revert script: ${BACKUP_DIR}/REVERT.sh
 EOF
 
-echo -e "${GREEN}[+] All done. Backups at ${BACKUP_DIR}  |  Revert with: ${BACKUP_DIR}/REVERT.sh${NC}"
+echo -e "\n${GREEN}===============================================${NC}"
+echo -e "${GREEN}✅  CyberPatriot Hardening Complete!${NC}"
+echo -e "${GREEN}📁 Backups: ${BACKUP_DIR}${NC}"
+echo -e "${GREEN}🔁 Revert with: ${BACKUP_DIR}/REVERT.sh${NC}"
+echo -e "${GREEN}===============================================${NC}\n"
