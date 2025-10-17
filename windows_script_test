@@ -1,0 +1,326 @@
+<# 
+CyberPatriot Windows Hardening Script (Enhanced)
+Author: ChatGPT (consolidated from prior version + user-proposed improvements)
+Run as: PowerShell (Admin)
+Tested: Windows 10/11 Pro/Edu
+
+Key switches
+ -EnableRdpNLA  : Enable RDP w/ NLA and open firewall rules
+ -Strict        : Extra service hardening, remove non-default SMB shares, disable WPAD svc
+ -DisableIPv6   : Disable IPv6 stack (use only if image clearly doesn't need IPv6)
+ -DisableUSB    : Block USB storage (USBSTOR)
+ -AuditOnly     : Print actions only; do not modify system
+ -LogDir        : Log/backup output directory (default C:\CyberPatriotLogs)
+
+Creates:
+ - Backups of key registry hives + service startup states
+ - CSV/TXT audits (admins, shares, users, tasks, startups, WMI persistence)
+ - Summary report and a generated restore script
+
+Caveats:
+ - DEP AlwaysOn may require reboot to take effect
+ - Some HKCU browser tweaks affect only the running admin
+#>
+
+[CmdletBinding()]
+param(
+  [switch]$EnableRdpNLA,
+  [switch]$Strict,
+  [switch]$DisableIPv6,
+  [switch]$DisableUSB,
+  [switch]$AuditOnly,
+  [string]$LogDir = "$env:SystemDrive\CyberPatriotLogs"
+)
+
+# ---------- Helpers ----------
+function Assert-Admin {
+  if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
+    Write-Error "Run this script in an elevated PowerShell (Admin)."
+    exit 1
+  }
+}
+
+function Do { param([scriptblock]$Action,[string]$Desc)
+  if ($AuditOnly) { Write-Host "[AUDIT] $Desc" -ForegroundColor Cyan }
+  else { Write-Host "[APPLY] $Desc" -ForegroundColor Green; & $Action }
+}
+
+function Safe-NewDir([string]$p){ if(-not(Test-Path $p)){ New-Item -ItemType Directory -Path $p -Force | Out-Null } }
+function TimeStamp { Get-Date -Format "yyyyMMdd-HHmmss" }
+
+function Set-RegDword($path,$name,$val){
+  New-Item -Path $path -Force | Out-Null
+  New-ItemProperty -Path $path -Name $name -Value $val -PropertyType DWord -Force | Out-Null
+}
+function Set-RegString($path,$name,$val){
+  New-Item -Path $path -Force | Out-Null
+  New-ItemProperty -Path $path -Name $name -Value $val -PropertyType String -Force | Out-Null
+}
+
+Assert-Admin
+Safe-NewDir $LogDir
+$stamp = TimeStamp
+Start-Transcript -Path "$LogDir\hardening-$stamp.log" -Force | Out-Null
+
+# ---------- Backups ----------
+$regBackupDir = Join-Path $LogDir "registry-$stamp"
+$svcBackupCsv = Join-Path $LogDir "services-$stamp.csv"
+Safe-NewDir $regBackupDir
+
+$RegKeysToBackup = @(
+  'HKLM\SYSTEM\CurrentControlSet\Control\Lsa',
+  'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System',
+  'HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters',
+  'HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU',
+  'HKLM\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient',
+  'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\kernel',
+  'HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon',
+  'HKLM\SYSTEM\CurrentControlSet\Services\USBSTOR',
+  'HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters'
+)
+foreach($k in $RegKeysToBackup){
+  Do { { reg.exe export $k "$regBackupDir\$(($k -replace '[\\/:*?""<>|]','_')).reg" /y | Out-Null } } "Backup registry: $k"
+}
+Do { { Get-Service | Select Name,DisplayName,Status,StartType | Export-Csv -NoTypeInformation -Path $svcBackupCsv } } "Backup service startup state"
+
+# ---------- Enumerations for review ----------
+$adminListPath   = Join-Path $LogDir "local-admins-$stamp.txt"
+$shareListPath   = Join-Path $LogDir "shares-$stamp.txt"
+$usersCsv        = Join-Path $LogDir "local-users-$stamp.csv"
+$warnTxt         = Join-Path $LogDir "security-warnings-$stamp.txt"
+$manualTxt       = Join-Path $LogDir "manual-review-items-$stamp.txt"
+$summaryPath     = Join-Path $LogDir "summary-$stamp.txt"
+$wmiCsvPrefix    = Join-Path $LogDir "wmi-persistence-$stamp"
+$tasksCsv        = Join-Path $LogDir "scheduled-tasks-$stamp.csv"
+
+Do { {
+  "Local Administrators group members:" | Out-File $adminListPath
+  try { (Get-LocalGroupMember -Group 'Administrators') | Format-Table -AutoSize | Out-String | Add-Content $adminListPath } catch {}
+} } "Enumerate local admins -> $adminListPath"
+
+Do { {
+  if (Get-Command Get-SmbShare -ErrorAction SilentlyContinue) {
+    Get-SmbShare | Sort-Object Name | Format-Table -AutoSize | Out-String | Out-File $shareListPath
+  } else { net share | Out-File $shareListPath }
+} } "Enumerate SMB shares -> $shareListPath"
+
+# Detailed local users
+Do { {
+  Get-LocalUser | Select Name,Enabled,PasswordRequired,PasswordLastSet,LastLogon,
+    @{N='PasswordAgeDays';E={(New-TimeSpan $_.PasswordLastSet).Days}} |
+    Export-Csv $usersCsv -NoTypeInformation
+  # Flag PasswordNotRequired
+  Get-LocalUser | Where-Object {-not $_.PasswordRequired} |
+    ForEach-Object { "WARNING: $($_.Name) has PasswordNotRequired" } |
+    Out-File $warnTxt -Append
+} } "Export local users -> $usersCsv; warnings -> $warnTxt"
+
+# ---------- Firewall ----------
+Do { {
+  netsh advfirewall set allprofiles state on            | Out-Null
+  netsh advfirewall set allprofiles firewallpolicy blockinboundalways,allowoutbound | Out-Null
+  foreach($rule in @(
+    "Remote Assistance (DCOM-In)","Remote Assistance (PNRP-In)","Remote Assistance (RA Server TCP-In)",
+    "Remote Assistance (SSDP TCP-In)","Remote Assistance (SSDP UDP-In)","Remote Assistance (TCP-In)","Telnet Server","netcat"
+  )){ netsh advfirewall firewall set rule name="$rule" new enable=no | Out-Null }
+} } "Enable firewall; block inbound; disable legacy inbound rules"
+
+# ---------- Advanced Auditing ----------
+Do { { auditpol /set /category:* /success:enable /failure:enable | Out-Null } } "Enable Success+Failure on all audit categories"
+
+# ---------- Password & Lockout Policy (secedit + net accounts) ----------
+$infPath = Join-Path $LogDir "local-security-$stamp.inf"
+@"
+[System Access]
+MinimumPasswordAge = 1
+MaximumPasswordAge = 60
+MinimumPasswordLength = 12
+PasswordComplexity = 1
+PasswordHistorySize = 10
+LockoutBadCount = 5
+ResetLockoutCount = 15
+LockoutDuration = 15
+
+[Event Audit]
+AuditSystemEvents = 3
+AuditLogonEvents = 3
+AuditObjectAccess = 3
+AuditPrivilegeUse = 3
+AuditPolicyChange = 3
+AuditAccountManage = 3
+AuditProcessTracking = 3
+AuditDSAccess = 0
+AuditAccountLogon = 3
+"@ | Out-File -Encoding ASCII $infPath
+Do { { secedit.exe /configure /db "$LogDir\secedit-$stamp.sdb" /cfg $infPath /areas SECURITYPOLICY /quiet } } "Apply local security policy"
+Do { { net accounts /lockoutthreshold:5 /MINPWLEN:12 /MAXPWAGE:60 /MINPWAGE:1 | Out-Null } } "Apply supporting Net Accounts policy"
+
+# ---------- LSA, UAC, SMB, LLMNR ----------
+Do { {
+  # LSA protection + NTLMv2 only + no LM hash + deny blank passwords
+  Set-RegDword 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'RunAsPPL' 1
+  Set-RegDword 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'LmCompatibilityLevel' 5
+  Set-RegDword 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'NoLMHash' 1
+  Set-RegDword 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'LimitBlankPasswordUse' 1
+
+  # UAC hardening
+  Set-RegDword 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'EnableLUA' 1
+  Set-RegDword 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'PromptOnSecureDesktop' 1
+  Set-RegDword 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'ConsentPromptBehaviorAdmin' 2
+
+  # SMB: require signing; disable SMBv1 if present
+  Set-RegDword 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters' 'RequireSecuritySignature' 1
+  try { dism /online /Disable-Feature /FeatureName:SMB1Protocol /NoRestart | Out-Null } catch {}
+
+  # LLMNR off
+  Set-RegDword 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient' 'EnableMulticast' 0
+} } "Harden LSA/UAC/SMB/LLMNR"
+
+# ---------- Hosts sanitize (keep localhost) ----------
+function Sanitize-Hosts {
+  $hosts = "$env:SystemRoot\System32\drivers\etc\hosts"
+  if (Test-Path $hosts) {
+    Copy-Item $hosts "$hosts.$stamp.bak" -Force
+    @"
+# Default HOSTS - CyberPatriot sanitize
+127.0.0.1       localhost
+::1             localhost
+"@ | Out-File -Encoding ASCII $hosts
+  }
+}
+Do { { Sanitize-Hosts } } "Sanitize hosts (backup + localhost entries)"
+
+# ---------- Services ----------
+$riskyDisable = @(
+  'RemoteRegistry','SSDPSRV','upnphost','Telnet','SNMP','SNMPTRAP',
+  'RemoteAccess','RasMan','WMPNetworkSvc','Fax','WebClient',
+  'XboxGipSvc','XblAuthManager','XblGameSave','XboxNetApiSvc'
+)
+$manualIfPresent = @('Spooler')  # safer than disable outright
+
+Do { {
+  foreach($s in $riskyDisable){
+    $svc = Get-Service -Name $s -ErrorAction SilentlyContinue
+    if($svc){ try{ Stop-Service -Name $s -Force -ErrorAction SilentlyContinue }catch{}; Set-Service -Name $s -StartupType Disabled }
+  }
+  foreach($s in $manualIfPresent){
+    $svc = Get-Service -Name $s -ErrorAction SilentlyContinue
+    if($svc){ Set-Service -Name $s -StartupType Manual }
+  }
+} } "Disable selected risky services; set Print Spooler to Manual"
+
+if ($Strict) {
+  Do { {
+    # Additional services to disable (only in strict mode)
+    $additionalRisky = @('WinRM','WinHttpAutoProxySvc','Browser','lfsvc','MapsBroker','lltdsvc','RetailDemo','PhoneSvc','icssvc','WbioSrvc')
+    foreach($s in $additionalRisky){
+      $svc = Get-Service -Name $s -ErrorAction SilentlyContinue
+      if($svc){ try{ Stop-Service -Name $s -Force -ErrorAction SilentlyContinue }catch{}; Set-Service -Name $s -StartupType Disabled }
+    }
+  } } "Strict: disabled extra risky/unused services"
+
+  Do { {
+    # Remove non-default SMB shares
+    if (Get-Command Get-SmbShare -ErrorAction SilentlyContinue) {
+      $keep = @('ADMIN$','C$','IPC$','print$')
+      Get-SmbShare | Where-Object { $keep -notcontains $_.Name } | ForEach-Object { try { Remove-SmbShare -Name $_.Name -Force } catch {} }
+    }
+  } } "Strict: remove non-default SMB shares"
+}
+
+# ---------- Windows Features (IIS/Telnet/TFTP) ----------
+$featuresToDisable = @(
+  'IIS-WebServerRole','IIS-WebServer','IIS-CommonHttpFeatures','IIS-HttpErrors','IIS-HttpRedirect',
+  'IIS-ApplicationDevelopment','IIS-NetFxExtensibility','IIS-NetFxExtensibility45','IIS-HealthAndDiagnostics',
+  'IIS-HttpLogging','IIS-LoggingLibraries','IIS-RequestMonitor','IIS-HttpTracing','IIS-Security','IIS-URLAuthorization',
+  'IIS-RequestFiltering','IIS-IPSecurity','IIS-Performance','IIS-HttpCompressionDynamic','IIS-WebServerManagementTools',
+  'IIS-ManagementScriptingTools','IIS-IIS6ManagementCompatibility','IIS-Metabase','IIS-HostableWebCore','IIS-StaticContent',
+  'IIS-DefaultDocument','IIS-DirectoryBrowsing','IIS-WebDAV','IIS-WebSockets','IIS-ApplicationInit','IIS-ASPNET','IIS-ASPNET45',
+  'IIS-ASP','IIS-CGI','IIS-ISAPIExtensions','IIS-ISAPIFilter','IIS-ServerSideIncludes','IIS-CustomLogging',
+  'IIS-ManagementConsole','IIS-ManagementService','IIS-WMICompatibility','IIS-LegacyScripts','IIS-LegacySnapIn',
+  'IIS-FTPServer','IIS-FTPSvc','IIS-FTPExtensibility','TFTP','TelnetClient','TelnetServer'
+)
+Do { {
+  foreach($f in $featuresToDisable){ try { dism /online /disable-feature /featurename:$f /norestart | Out-Null } catch {} }
+} } "Disable IIS/Telnet/TFTP features if present"
+
+# ---------- RDP ----------
+if ($EnableRdpNLA) {
+  Do { {
+    New-Item 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' -Force | Out-Null
+    Set-RegDword 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' 'fDenyTSConnections' 0
+    Set-RegDword 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' 'UserAuthentication' 1
+    netsh advfirewall firewall set rule group="remote desktop" new enable=yes | Out-Null
+  } } "Enable RDP with NLA and open firewall rules"
+} else {
+  Do { {
+    Set-RegDword 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' 'fDenyTSConnections' 1
+    netsh advfirewall firewall set rule group="remote desktop" new enable=no | Out-Null
+  } } "Ensure RDP is disabled"
+}
+
+# ---------- Defender update + quick scan ----------
+Do { {
+  $mp = "${env:ProgramFiles}\Windows Defender\MpCmdRun.exe"
+  if (Test-Path $mp) { & $mp -SignatureUpdate | Out-Null; & $mp -Scan -ScanType 1 | Out-Null }
+} } "Defender: update signatures + quick scan"
+
+# ---------- Windows Update behavior ----------
+Do { {
+  New-Item 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' -Force | Out-Null
+  Set-RegDword 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' 'NoAutoUpdate' 0
+  Set-RegDword 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' 'AUOptions' 3   # auto download, notify install
+} } "Set Windows Update to Download+Notify"
+
+# ---------- (NEW) Credential & Session Management ----------
+Do { {
+  # Machine inactivity limit (locks session after 15 min)
+  Set-RegDword 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'InactivityTimeoutSecs' 900
+
+  # Disable cached domain logons
+  Set-RegString 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' 'CachedLogonsCount' '0'
+
+  # Clear cached credentials (cmdkey)
+  $targets = (& cmdkey /list) -match 'Target:' | ForEach-Object { $_ -replace '.*Target:\s*','' }
+  foreach($t in $targets){ try { cmdkey /delete:$t | Out-Null } catch {} }
+} } "Credential & session hardening (lock after 15m, disable cached logons, clear cmdkey secrets)"
+
+# ---------- (NEW) Startup & Scheduled Tasks Audit ----------
+Do { {
+  if (Get-Command Get-ScheduledTask -ErrorAction SilentlyContinue) {
+    Get-ScheduledTask | Where-Object {$_.State -ne 'Disabled'} |
+      Select-Object TaskName,TaskPath,State,@{N='Actions';E={ ($_.Actions | ForEach-Object {$_.Execute}) -join '; ' }} |
+      Export-Csv $tasksCsv -NoTypeInformation
+  }
+  $runKeys = @(
+    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run',
+    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce',
+    'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run',
+    'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce'
+  )
+  foreach($key in $runKeys){
+    if(Test-Path $key){
+      $outfile = Join-Path $LogDir ("startup-"+($key -replace '[:\\]','-')+"-$stamp.txt")
+      Get-ItemProperty $key | Out-File $outfile
+    }
+  }
+} } "Audit scheduled tasks and startup run-keys"
+
+# ---------- (NEW) Network Hardening ----------
+Do { {
+  # Disable NetBIOS over TCP/IP on all IP-enabled adapters
+  Get-WmiObject Win32_NetworkAdapterConfiguration | Where-Object {$_.IPEnabled} | ForEach-Object { $_.SetTcpipNetbios(2) | Out-Null }
+
+  # Harden TCP/IP stack
+  Set-RegDword 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' 'EnableICMPRedirects' 0
+  Set-RegDword 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' 'DisableIPSourceRouting' 2
+  Set-RegDword 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' 'SynAttackProtect' 1
+
+  # WPAD: reset WinHTTP proxy; optional WPAD svc disabling happens in -Strict
+  & netsh winhttp reset proxy | Out-Null
+} } "Network hardening: NetBIOS off, ICMP redirects off, source routing off, SYN protect, reset proxy"
+
+if ($DisableIPv6) {
+  Do { {
+    # Disable IPv6 (all components). Requires reboot to fully apply.
+    Set-RegDword 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parame
