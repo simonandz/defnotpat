@@ -1,0 +1,7 @@
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
+.\CyberPatriot-Win-Hardening.ps1                      # safe defaults
+.\CyberPatriot-Win-Hardening.ps1 -Strict              # tighter services/shares/WPAD
+.\CyberPatriot-Win-Hardening.ps1 -EnableRdpNLA        # enable RDP with NLA
+.\CyberPatriot-Win-Hardening.ps1 -DisableIPv6         # only if clearly not needed
+.\CyberPatriot-Win-Hardening.ps1 -DisableUSB          # optional USB block
+.\CyberPatriot-Win-Hardening.ps1 -AuditOnly           # show actions, change nothing
