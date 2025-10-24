@@ -1,9 +1,10 @@
 #!/bin/bash
 # =====================================================================
-# CyberPatriot Mint 21 Hardening Script (Competition-Safe)
+# CyberPatriot Mint 21 Hardening Script (Competition-Safe) + Auto Updates
 # - Tailored to prompt requirements
 # - Protects the current admin & LightDM autologin user from lockout
 # - Does NOT change the protected administrator's password
+# - Adds unattended security updates + daily APT periodic tasks
 # =====================================================================
 
 set -euo pipefail
@@ -34,7 +35,6 @@ fi
 AUTOLOGIN_USER=""
 LIGHTDM_DIR="/etc/lightdm"
 if [[ -d "$LIGHTDM_DIR" ]]; then
-  # search in main conf and conf.d fragments
   while IFS= read -r file; do
     u="$(grep -E '^\s*autologin-user\s*=' "$file" | sed -E 's/.*=\s*//g' | head -n1 || true)"
     if [[ -n "$u" ]]; then AUTOLOGIN_USER="$u"; break; fi
@@ -52,7 +52,6 @@ echo "[*] LightDM autologin user (if set): ${AUTOLOGIN_USER:-<none>}"
 # ------------------------------
 # Scenario: Authorized accounts
 # ------------------------------
-# Admins (must be sudoers) with given scenario passwords (NOT applied to PROTECTED users)
 declare -A ADMIN_PASS
 ADMIN_PASS[twellick]='3Corp3x3cutive'
 ADMIN_PASS[jplofe]='AuditM4n@g3r'
@@ -64,13 +63,11 @@ ADMIN_PASS[sswailem]='data'
 
 AUTHORIZED_ADMINS=(twellick jplofe pmccleery wbraddock ealderson lchong sswailem)
 
-# Authorized non-admin users (no passwords specified in prompt)
 AUTHORIZED_USERS=( \
   pprice sknowles tcolby jchutney sweinsberg sjacobs lspencer mralbern \
   jrobinson gsheldern coshearn jlaslen kshelvern jtholdon belkarn bharper \
 )
 
-# Combine for quick membership checks
 ALL_AUTHZ=("${AUTHORIZED_ADMINS[@]}" "${AUTHORIZED_USERS[@]}")
 
 # ------------------------------
@@ -144,13 +141,10 @@ echo "[*] Refreshing apt and installing required packages..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 
-# Required: Chromium, GIMP, Inkscape, Scribus; Apache; OpenSSH
 apt-get install -y \
   chromium-browser gimp inkscape scribus \
   apache2 openssh-server ufw \
   libpam-pwquality
-
-# Note: Mint 21 may map chromium via snap or apt meta. The above covers the apt route.
 
 # ------------------------------
 # Services required by prompt
@@ -174,14 +168,12 @@ echo "[*] Enforcing password policy (pwquality + login.defs)..."
 PWD_PAM="/etc/pam.d/common-password"
 [[ -f "$PWD_PAM" ]] && cp -n "$PWD_PAM" "${PWD_PAM}.bak.$STAMP"
 
-# Ensure pwquality line exists and set sane minimums
 if grep -q "pam_pwquality.so" "$PWD_PAM"; then
   sed -i -E 's#^(password\s+requisite\s+pam_pwquality\.so).*#\1 retry=3 minlen=12 difok=3 ucredit=-1 lcredit=-1 dcredit=-1 ocredit=-1#' "$PWD_PAM"
 else
   echo "password requisite pam_pwquality.so retry=3 minlen=12 difok=3 ucredit=-1 lcredit=-1 dcredit=-1 ocredit=-1" >> "$PWD_PAM"
 fi
 
-# login.defs aging
 LOGIN_DEFS="/etc/login.defs"
 cp -n "$LOGIN_DEFS" "${LOGIN_DEFS}.bak.$STAMP"
 sed -i -E 's/^PASS_MAX_DAYS.*/PASS_MAX_DAYS   90/' "$LOGIN_DEFS"
@@ -195,8 +187,6 @@ echo "[*] Configuring login lockout with pam_faillock (deny=5 for 30m, SKIP prot
 AUTH_PAM="/etc/pam.d/common-auth"
 cp -n "$AUTH_PAM" "${AUTH_PAM}.bak.$STAMP"
 
-# Insert a rule that skips the next line if the user is the protected one
-# Then add faillock preauth & authfail lines if not present
 if ! grep -q "pam_succeed_if.so.*user = ${PROTECTED_USER}" "$AUTH_PAM"; then
   sed -i "1 i auth [success=1 default=ignore] pam_succeed_if.so user = ${PROTECTED_USER}" "$AUTH_PAM"
 fi
@@ -207,12 +197,10 @@ if ! grep -q "pam_faillock.so authfail" "$AUTH_PAM"; then
   sed -i '$ a auth [default=die] pam_faillock.so authfail deny=5 unlock_time=1800' "$AUTH_PAM"
 fi
 
-# Ensure faillock is installed (on Mint 21 it's part of libpam-modules)
 command -v faillock >/dev/null 2>&1 || true
 
 # ------------------------------
 # Authorized account enforcement
-# (create/ensure admins; ensure non-admins exist; DO NOT delete authorized users)
 # ------------------------------
 echo "[*] Ensuring authorized administrator accounts..."
 for a in "${AUTHORIZED_ADMINS[@]}"; do
@@ -223,17 +211,14 @@ done
 echo "[*] Ensuring authorized non-admin user accounts..."
 for u in "${AUTHORIZED_USERS[@]}"; do
   ensure_user "$u" "" ""
-  # make sure they are NOT in sudo
   ensure_not_in_group "$u" "sudo"
 done
 
 # ------------------------------
-# Handle unauthorized human users (UID >=1000)
-# - Do NOT delete; safely lock instead (skip PROTECTED & authorized)
+# Handle unauthorized human users: lock (non-destructive)
 # ------------------------------
 echo "[*] Locking unauthorized local users (UID >= 1000), non-protected..."
 while IFS=: read -r name _ uid _; do
-  # Only human users
   if [[ "$uid" -ge 1000 && "$name" != "nobody" ]]; then
     if in_array "$name" "${ALL_AUTHZ[@]}"; then
       echo "[=] Authorized user '$name' kept."
@@ -269,7 +254,7 @@ echo "[*] Verifying LightDM is present (not altering DM selection)..."
 if ! dpkg -l | awk '{print $2}' | grep -qx lightdm; then
   apt-get install -y lightdm
 fi
-# Do NOT run dpkg-reconfigure; we leave the current DM as-is per prompt.
+# Do NOT run dpkg-reconfigure; leave current DM as-is.
 
 # ------------------------------
 # Ensure SSH stays enabled and available
@@ -291,6 +276,46 @@ for pat in "${MEDIA_PATTERNS[@]}"; do
 done
 
 # ------------------------------
+# Automatic security updates (NEW)
+# ------------------------------
+echo "[*] Enabling unattended security updates + daily APT periodic tasks..."
+apt-get install -y unattended-upgrades apt-listchanges || true
+
+# Back up any existing APT periodic configs
+for f in /etc/apt/apt.conf.d/10periodic /etc/apt/apt.conf.d/20auto-upgrades /etc/apt/apt.conf.d/50unattended-upgrades; do
+  [[ -f "$f" ]] && cp -n "$f" "${f}.bak.$STAMP"
+done
+
+# Ensure periodic tasks run daily
+cat > /etc/apt/apt.conf.d/10periodic <<'EOF'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Download-Upgradeable-Packages "1";
+APT::Periodic::AutocleanInterval "7";
+APT::Periodic::Unattended-Upgrade "1";
+EOF
+
+# Ensure unattended-upgrades is enabled
+cat > /etc/apt/apt.conf.d/20auto-upgrades <<'EOF'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+EOF
+
+# Minimal unattended-upgrades tuning (auto security upgrades; optional reboot window)
+# Note: We don't force reboots; uncomment if desired for your image.
+if [[ ! -f /etc/apt/apt.conf.d/50unattended-upgrades ]]; then
+  dpkg-reconfigure -fnoninteractive unattended-upgrades || true
+fi
+# Ensure no interactive prompts block future runs
+sed -i -E 's#^//\s*Unattended-Upgrade::Remove-Unused-Kernel-Packages.*#Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";#' /etc/apt/apt.conf.d/50unattended-upgrades || true
+sed -i -E 's#^//\s*Unattended-Upgrade::Remove-Unused-Dependencies.*#Unattended-Upgrade::Remove-Unused-Dependencies "true";#' /etc/apt/apt.conf.d/50unattended-upgrades || true
+# Optional controlled reboot time (commented to stay competition-safe)
+# echo 'Unattended-Upgrade::Automatic-Reboot "true";' >> /etc/apt/apt.conf.d/50unattended-upgrades
+# echo 'Unattended-Upgrade::Automatic-Reboot-Time "02:00";' >> /etc/apt/apt.conf.d/50unattended-upgrades
+
+systemctl enable --now unattended-upgrades.service || true
+echo "[+] Unattended-upgrades enabled and scheduled."
+
+# ------------------------------
 # Scoring/competition safety reminders
 # ------------------------------
 echo "[*] Leaving CCS Client & scoring artifacts untouched."
@@ -298,14 +323,15 @@ echo "[*] Not altering time zone/date/time."
 echo "[*] Not changing display manager configuration beyond verifying LightDM availability."
 
 # ------------------------------
-# Create a minimal rollback helper (restores PAM & login.defs backups)
+# Create a minimal rollback helper (restores PAM, login.defs, APT configs)
 # ------------------------------
 ROLLBACK="/root/restore_cp_backups.sh"
 cat > "$ROLLBACK" <<EOF
 #!/bin/bash
 set -e
-echo "[*] Restoring PAM and login.defs backups where available..."
-for f in /etc/pam.d/common-auth /etc/pam.d/common-password /etc/login.defs; do
+echo "[*] Restoring PAM, login.defs, and APT config backups where available..."
+for f in /etc/pam.d/common-auth /etc/pam.d/common-password /etc/login.defs \
+         /etc/apt/apt.conf.d/10periodic /etc/apt/apt.conf.d/20auto-upgrades /etc/apt/apt.conf.d/50unattended-upgrades; do
   b=\${f}.bak.$STAMP
   if [[ -f "\$b" ]]; then
     cp -f "\$b" "\$f"
@@ -318,7 +344,7 @@ EOF
 chmod +x "$ROLLBACK"
 echo "[+] Rollback helper created: $ROLLBACK"
 
-echo "[+] Completed CyberPatriot Mint 21 hardening safely."
+echo "[+] Completed CyberPatriot Mint 21 hardening safely (with auto updates)."
 echo "[i] Protected admin: ${PROTECTED_USER:-<none>} (password unchanged, no lockout)."
 [[ -n "$AUTOLOGIN_USER" ]] && echo "[i] LightDM autologin user '${AUTOLOGIN_USER}' protected as well."
 exit 0
