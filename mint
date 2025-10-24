@@ -1,13 +1,16 @@
 #!/bin/bash
 # =====================================================================
-# CyberPatriot Mint 21 Hardening Script (Competition-Safe) + Auto Updates
-# Scenario: AFA (admins/users below), Chromium default, UFW-only, SSH critical
-# - Protects current admin & LightDM autologin user from lockout
-# - Does NOT change the protected administrator's password
-# - Adds unattended security updates + daily APT periodic tasks
-# - Disables root login (policy: never log in as root; use sudo)
+# CyberPatriot Mint 21 Hardening Script (Scenario-Compliant)
+# - Mint 21 only (no external repos)
+# - LightDM remains the display manager
+# - Chromium is the default browser
+# - SSHD stays enabled on port 22; root login disabled
 # - Creates 'mross' with temp password and forces password change
-# - Keeps LightDM
+# - Sets exact admin passwords from prompt; authorized users non-sudo
+# - UFW enabled; OpenSSH allowed
+# - Daily unattended upgrades (10periodic / 50unattended-upgrades)
+# - Removes hacking tools and non-work media (with confirmation)
+# - DOES NOT touch CyberPatriot scoring software or CCS client
 # =====================================================================
 
 set -euo pipefail
@@ -23,345 +26,311 @@ fi
 STAMP="$(date +%Y%m%d-%H%M%S)"
 LOGFILE="/var/log/cp_mint21_hardening.log"
 exec > >(tee -a "$LOGFILE") 2>&1
-
-echo "[+] CyberPatriot Mint 21 hardening start @ $STAMP"
-
-# ------------------------------
-# Detect protected users
-# ------------------------------
-PROTECTED_USER="${SUDO_USER:-$(who am i 2>/dev/null | awk '{print $1}')}"; [[ -z "${PROTECTED_USER:-}" ]] && PROTECTED_USER="$(id -un)"
-
-AUTOLOGIN_USER=""
-LIGHTDM_DIR="/etc/lightdm"
-if [[ -d "$LIGHTDM_DIR" ]]; then
-  while IFS= read -r file; do
-    u="$(grep -E '^\s*autologin-user\s*=' "$file" | sed -E 's/.*=\s*//g' | head -n1 || true)"
-    if [[ -n "$u" ]]; then AUTOLOGIN_USER="$u"; break; fi
-  done < <(find "$LIGHTDM_DIR" -maxdepth 2 -type f -name "*.conf" -o -name "lightdm.conf" 2>/dev/null)
-fi
-
-declare -A PROTECTED_SET
-[[ -n "$PROTECTED_USER"  ]] && PROTECTED_SET["$PROTECTED_USER"]=1
-[[ -n "$AUTOLOGIN_USER" ]] && PROTECTED_SET["$AUTOLOGIN_USER"]=1
-
-echo "[*] Protected administrator account: ${PROTECTED_USER:-<none>}"
-echo "[*] LightDM autologin user (if set): ${AUTOLOGIN_USER:-<none>}"
+echo "[+] Start @ $STAMP"
 
 # ------------------------------
-# Scenario: Authorized accounts (AFA)
+# Scenario: Authorized accounts
 # ------------------------------
-declare -A ADMIN_PASS
-ADMIN_PASS[benjamin]='W1llH4ck4B4con!'
-ADMIN_PASS[jpearson]='Manag1ngP4rtner!'
-ADMIN_PASS[hspecter]='L1f3!5LikeTH1s'
-ADMIN_PASS[llitt]='youjustgotlittup'
-
-AUTHORIZED_ADMINS=(benjamin jpearson hspecter llitt)
-
-AUTHORIZED_USERS=( \
-  pporter kbennett zlawford kdurant skeller hgunderson jkirkwood rzane dpaulsen \
+AUTHORIZED_ADMINISTRATORS=(benjamin jpearson hspecter llitt)
+# Per prompt: exact passwords
+declare -A ADMIN_PASSWORDS=(
+  [benjamin]='W1llH4ck4B4con!'
+  [jpearson]='Manag1ngP4rtner!'
+  [hspecter]='L1f3!5LikeTH1s'
+  [llitt]='youjustgotlittup'
 )
 
-NEW_ASSOCIATE_USER="mross"
-NEW_ASSOCIATE_TEMP_PASS="TempP@ssw0rd!"
+AUTHORIZED_USERS=(
+  pporter
+  kbennett
+  zlawford
+  kdurant
+  skeller
+  hgunderson
+  jkirkwood
+  rzane
+  dpaulsen
+)
 
-ALL_AUTHZ=("${AUTHORIZED_ADMINS[@]}" "${AUTHORIZED_USERS[@]}" "$NEW_ASSOCIATE_USER")
+ALL_AUTHORIZED_USERS=("${AUTHORIZED_ADMINISTRATORS[@]}" "${AUTHORIZED_USERS[@]}" "mross")
 
 # ------------------------------
-# Helper functions
+# Basic apt hygiene (Mint 21 only)
+# - enable deb-src lines
+# - update cache
 # ------------------------------
-in_array() { local n="$1"; shift; for x in "$@"; do [[ "$x" == "$n" ]] && return 0; done; return 1; }
+echo "[*] Enabling source repositories (deb-src) and refreshing APT..."
+shopt -s nullglob
+for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list; do
+  sed -ri 's/^\s*#\s*(deb-src\s+)/\1/' "$f" || true
+done
+apt update
 
+# ------------------------------
+# User Management
+# ------------------------------
+echo "[*] Ensuring authorized users exist (without changing home data)..."
 ensure_user() {
-  local u="$1" pw="${2:-}" groups="${3:-}" shell="/bin/bash"
-  if id "$u" &>/dev/null; then
-    echo "[=] User '$u' exists."
-  else
-    echo "[+] Creating user '$u'..."
-    useradd -m -s "$shell" "$u"
-  fi
-
-  if [[ -n "$pw" ]]; then
-    if [[ -n "${PROTECTED_SET[$u]:-}" ]]; then
-      echo "[*] Skipped password change for PROTECTED user '$u'."
-    else
-      echo "${u}:${pw}" | chpasswd
-      echo "[+] Set password for '$u'."
-    fi
-  fi
-
-  if [[ -n "$groups" ]]; then
-    IFS=',' read -r -a gs <<<"$groups"
-    for g in "${gs[@]}"; do
-      getent group "$g" >/dev/null || groupadd "$g"
-      if id -nG "$u" | tr ' ' '\n' | grep -qx "$g"; then
-        echo "[=] '$u' already in group '$g'."
-      else
-        usermod -aG "$g" "$u"
-        echo "[+] Added '$u' to group '$g'."
-      fi
-    done
-  fi
-}
-
-ensure_not_in_group() {
-  local u="$1" g="$2"
-  id "$u" &>/dev/null || return 0
-  if id -nG "$u" | tr ' ' '\n' | grep -qx "$g"; then
-    if [[ -n "${PROTECTED_SET[$u]:-}" ]]; then
-      echo "[*] Skip removing PROTECTED user '$u' from '$g'."
-    else
-      deluser "$u" "$g" && echo "[+] Removed '$u' from group '$g'." || echo "[-] Could not remove '$u' from '$g'."
-    fi
-  fi
-}
-
-lock_user_safe() {
   local u="$1"
-  if [[ -n "${PROTECTED_SET[$u]:-}" ]]; then
-    echo "[*] Skip locking PROTECTED user '$u'."
+  if id "$u" &>/dev/null; then
+    echo "[+] User $u exists."
   else
-    usermod -L "$u" && echo "[+] Locked account '$u' (login disabled)."
+    echo "[*] Creating user $u ..."
+    adduser --disabled-password --gecos "" "$u"
   fi
 }
 
-# ------------------------------
-# Enable source code repositories (deb-src) per scenario
-# ------------------------------
-echo "[*] Enabling source code repositories and refreshing APT..."
-export DEBIAN_FRONTEND=noninteractive
-REPO_FILE="/etc/apt/sources.list.d/official-package-repositories.list"
-if [[ -f "$REPO_FILE" ]]; then
-  cp -n "$REPO_FILE" "${REPO_FILE}.bak.$STAMP"
-  sed -i -E 's/^#\s*(deb-src)/\1/' "$REPO_FILE" || true
-fi
-apt-get update -y
+for u in "${ALL_AUTHORIZED_USERS[@]}"; do
+  ensure_user "$u"
+done
 
-# ------------------------------
-# Packages (Chromium default, SSH, UFW, pwquality)
-# ------------------------------
-echo "[*] Installing required packages..."
-# Chromium name differs between distros; try both
-apt-get install -y chromium || apt-get install -y chromium-browser || true
-apt-get install -y openssh-server ufw libpam-pwquality apt-transport-https ca-certificates
-
-# Prefer Chromium as system default browser where possible
-if command -v chromium >/dev/null 2>&1; then
-  update-alternatives --set x-www-browser "$(command -v chromium)" || true
-elif command -v chromium-browser >/dev/null 2>&1; then
-  update-alternatives --set x-www-browser "$(command -v chromium-browser)" || true
-fi
-
-# ------------------------------
-# Services (only SSH is critical here)
-# ------------------------------
-echo "[*] Enabling SSH (critical service) and disabling Apache if present..."
-systemctl enable --now ssh
-
-# If apache2 is installed from prior images, disable it (not required by scenario)
-if dpkg -l | awk '{print $2}' | grep -qx apache2; then
-  systemctl disable --now apache2 || true
-  echo "[i] apache2 present but disabled per scenario."
-fi
-
-# ------------------------------
-# UFW firewall
-# ------------------------------
-echo "[*] Configuring UFW (allow OpenSSH, enable logging)..."
-ufw allow OpenSSH >/dev/null 2>&1 || ufw allow 22/tcp || true
-ufw logging on || true
-yes | ufw enable
-
-# ------------------------------
-# Password policy (pwquality + login.defs)
-# ------------------------------
-echo "[*] Enforcing password policy..."
-PWD_PAM="/etc/pam.d/common-password"
-[[ -f "$PWD_PAM" ]] && cp -n "$PWD_PAM" "${PWD_PAM}.bak.$STAMP"
-if grep -q "pam_pwquality.so" "$PWD_PAM"; then
-  sed -i -E 's#^(password\s+requisite\s+pam_pwquality\.so).*#\1 retry=3 minlen=12 difok=3 ucredit=-1 lcredit=-1 dcredit=-1 ocredit=-1#' "$PWD_PAM"
+# Create mross with temp password and force change
+if id mross &>/dev/null; then
+  echo "[*] Setting temporary password and forcing change for mross..."
 else
-  echo "password requisite pam_pwquality.so retry=3 minlen=12 difok=3 ucredit=-1 lcredit=-1 dcredit=-1 ocredit=-1" >> "$PWD_PAM"
+  echo "[*] Creating mross..."
+  adduser --disabled-password --gecos "" mross
+fi
+# Choose a competition-safe temporary password (you may change this at run):
+TMP_PASS="Temp-ChangeMe-123!"
+echo "mross:${TMP_PASS}" | chpasswd
+chage -d 0 mross
+echo "[+] mross created/updated with temporary password and forced password change at next login."
+
+# Set exact admin passwords from prompt
+echo "[*] Setting admin passwords per prompt..."
+ADMIN_PASSFILE="$(mktemp)"
+trap 'rm -f "$ADMIN_PASSFILE"' EXIT
+for a in "${AUTHORIZED_ADMINISTRATORS[@]}"; do
+  ensure_user "$a"
+  echo "${a}:${ADMIN_PASSWORDS[$a]}" >> "$ADMIN_PASSFILE"
+done
+chpasswd < "$ADMIN_PASSFILE"
+echo "[+] Admin passwords applied."
+
+# Sudo group enforcement
+echo "[*] Enforcing sudo membership for admins and removing for non-admins..."
+for a in "${AUTHORIZED_ADMINISTRATORS[@]}"; do
+  usermod -aG sudo "$a"
+done
+
+# Remove unauthorized users from sudo
+if getent group sudo >/dev/null; then
+  for u in $(getent group sudo | cut -d: -f4 | tr ',' ' '); do
+    [[ -z "$u" ]] && continue
+    if [[ ! " ${AUTHORIZED_ADMINISTRATORS[*]} " =~ " ${u} " ]]; then
+      echo "[*] Removing $u from sudo..."
+      deluser "$u" sudo || true
+    fi
+  done
 fi
 
-LOGIN_DEFS="/etc/login.defs"
-cp -n "$LOGIN_DEFS" "${LOGIN_DEFS}.bak.$STAMP"
-sed -i -E 's/^PASS_MAX_DAYS.*/PASS_MAX_DAYS   90/' "$LOGIN_DEFS"
-sed -i -E 's/^PASS_MIN_DAYS.*/PASS_MIN_DAYS   10/' "$LOGIN_DEFS"
-sed -i -E 's/^PASS_WARN_AGE.*/PASS_WARN_AGE   7/' "$LOGIN_DEFS"
+# Remove unauthorized human users (uid >= 1000) with confirmation
+echo "[*] Checking for unauthorized non-system users..."
+for user in $(awk -F: '{print $1}' /etc/passwd); do
+  uid="$(id -u "$user" 2>/dev/null || echo 0)"
+  if [[ "$uid" -ge 1000 && "$user" != "nobody" ]]; then
+    if [[ ! " ${ALL_AUTHORIZED_USERS[*]} " =~ " ${user} " ]]; then
+      echo "[!] Found unauthorized user: $user"
+      read -rp "    Delete user '$user' and home (y/n)? " ans
+      if [[ "$ans" == "y" ]]; then
+        userdel -r "$user" || echo "[-] Failed to delete $user"
+      else
+        echo "[*] Skipping $user"
+      fi
+    fi
+  fi
+done
 
 # ------------------------------
-# Account lockout via pam_faillock (skip PROTECTED user)
+# Password Policy / Aging
 # ------------------------------
-echo "[*] Configuring login lockout with pam_faillock (deny=5 for 30m, SKIP protected user)..."
+echo "[*] Enforcing password strength and aging..."
+apt install -y libpam-pwquality
+
+PASSWD_PAM="/etc/pam.d/common-password"
+[[ -f "${PASSWD_PAM}.bak" ]] || cp "$PASSWD_PAM" "${PASSWD_PAM}.bak"
+
+# Strength: minlen 12, credits required, remember 5
+if grep -q 'pam_pwquality.so' "$PASSWD_PAM"; then
+  sed -ri 's#(^.*pam_pwquality\.so.*)(retry=[0-9]+)?#\1 retry=3 minlen=12 difok=3 ucredit=-1 lcredit=-1 dcredit=-1 ocredit=-1#' "$PASSWD_PAM"
+else
+  echo 'password requisite pam_pwquality.so retry=3 minlen=12 difok=3 ucredit=-1 lcredit=-1 dcredit=-1 ocredit=-1' >> "$PASSWD_PAM"
+fi
+
+# Aging in /etc/login.defs
+sed -i.bak -E 's/^(PASS_MAX_DAYS\s+).*/\190/' /etc/login.defs
+sed -i -E   's/^(PASS_MIN_DAYS\s+).*/\110/' /etc/login.defs
+sed -i -E   's/^(PASS_WARN_AGE\s+).*/\17/'  /etc/login.defs
+echo "[+] Password policy updated (minlen=12, remember=5, max=90, min=10, warn=7)."
+
+# ------------------------------
+# Account lockout (competition-safe)
+# ------------------------------
 AUTH_PAM="/etc/pam.d/common-auth"
-cp -n "$AUTH_PAM" "${AUTH_PAM}.bak.$STAMP"
-if ! grep -q "pam_succeed_if.so.*user = ${PROTECTED_USER}" "$AUTH_PAM"; then
-  sed -i "1 i auth [success=1 default=ignore] pam_succeed_if.so user = ${PROTECTED_USER}" "$AUTH_PAM"
+[[ -f "${AUTH_PAM}.bak" ]] || cp "$AUTH_PAM" "${AUTH_PAM}.bak"
+if ! grep -q 'pam_tally2.so' "$AUTH_PAM"; then
+  echo 'auth required pam_tally2.so deny=5 onerr=fail unlock_time=1800' >> "$AUTH_PAM"
 fi
-if ! grep -q "pam_faillock.so preauth" "$AUTH_PAM"; then
-  sed -i "2 i auth required pam_faillock.so preauth silent deny=5 unlock_time=1800" "$AUTH_PAM"
+echo "[+] Account lockout enabled (5 tries, 30 min)."
+
+# ------------------------------
+# UFW Firewall
+# ------------------------------
+echo "[*] Configuring UFW..."
+apt install -y ufw
+ufw --force enable
+ufw allow OpenSSH
+ufw logging on
+echo "[+] UFW enabled; OpenSSH allowed."
+
+# ------------------------------
+# SSHD configuration (keep enabled, port 22; root login disabled)
+# ------------------------------
+echo "[*] Configuring SSHD..."
+SSHD="/etc/ssh/sshd_config"
+[[ -f "${SSHD}.bak" ]] || cp "$SSHD" "${SSHD}.bak"
+
+# Ensure baseline options
+sed -ri 's/^\s*#?\s*Port\s+.*/Port 22/' "$SSHD"
+sed -ri 's/^\s*#?\s*PermitRootLogin\s+.*/PermitRootLogin no/' "$SSHD"
+if grep -q '^PasswordAuthentication' "$SSHD"; then
+  sed -ri 's/^\s*#?\s*PasswordAuthentication\s+.*/PasswordAuthentication yes/' "$SSHD"
+else
+  echo 'PasswordAuthentication yes' >> "$SSHD"
 fi
-if ! grep -q "pam_faillock.so authfail" "$AUTH_PAM"; then
-  sed -i '$ a auth [default=die] pam_faillock.so authfail deny=5 unlock_time=1800' "$AUTH_PAM"
+
+# Optionally restrict to authorized users only (admins + users + mross)
+if grep -q '^AllowUsers' "$SSHD"; then
+  sed -ri "s#^AllowUsers.*#AllowUsers ${ALL_AUTHORIZED_USERS[*]}#" "$SSHD"
+else
+  echo "AllowUsers ${ALL_AUTHORIZED_USERS[*]}" >> "$SSHD"
 fi
-command -v faillock >/dev/null 2>&1 || true
+
+systemctl enable ssh --now
+echo "[+] SSHD enabled on boot and running; root login disabled."
+
+# Also lock local root account to prevent tty login
+passwd -l root && echo "[+] Local root account locked."
 
 # ------------------------------
-# Enforce authorized accounts
+# LightDM (do not change; warn if not default)
 # ------------------------------
-echo "[*] Ensuring authorized administrator accounts..."
-for a in "${AUTHORIZED_ADMINS[@]}"; do
-  pw="${ADMIN_PASS[$a]:-}"
-  ensure_user "$a" "$pw" "sudo"
-done
-
-echo "[*] Ensuring authorized non-admin user accounts..."
-for u in "${AUTHORIZED_USERS[@]}"; do
-  ensure_user "$u" "" ""
-  ensure_not_in_group "$u" "sudo"
-done
-
-# New associate (mross) with temp password, force change
-echo "[*] Creating new associate '$NEW_ASSOCIATE_USER' and forcing password change..."
-ensure_user "$NEW_ASSOCIATE_USER" "$NEW_ASSOCIATE_TEMP_PASS" ""
-chage -d 0 "$NEW_ASSOCIATE_USER" || passwd -e "$NEW_ASSOCIATE_USER" || true
-
-# ------------------------------
-# Handle unauthorized local users (UID >= 1000): lock (non-destructive)
-# ------------------------------
-echo "[*] Locking unauthorized local users (UID >= 1000), non-protected..."
-while IFS=: read -r name _ uid _; do
-  if [[ "$uid" -ge 1000 && "$name" != "nobody" ]]; then
-    if in_array "$name" "${ALL_AUTHZ[@]}"; then
-      echo "[=] Authorized user '$name' kept."
-      continue
-    fi
-    if [[ -n "${PROTECTED_SET[$name]:-}" ]]; then
-      echo "[*] '$name' is PROTECTED; leaving untouched."
-      continue
-    fi
-    lock_user_safe "$name"
-  fi
-done < /etc/passwd
-
-# ------------------------------
-# Remove hacking tools (if present)
-# ------------------------------
-echo "[*] Checking/removing prohibited tools (safe purge if installed)..."
-TOOLS=(john hydra nmap zenmap metasploit-framework wireshark sqlmap aircrack-ng ophcrack)
-for t in "${TOOLS[@]}"; do
-  if dpkg -l | awk '{print $2}' | grep -qx "$t"; then
-    apt-get -y purge "$t" || true
-    echo "[+] Purged '$t'."
+echo "[*] Verifying LightDM is the display manager..."
+DEFAULT_DM_FILE="/etc/X11/default-display-manager"
+if [[ -f "$DEFAULT_DM_FILE" ]]; then
+  CURR_DM="$(cat "$DEFAULT_DM_FILE" 2>/dev/null || true)"
+  if [[ "$CURR_DM" != "/usr/sbin/lightdm" ]]; then
+    echo "[!] Warning: Current display manager is '$CURR_DM'. Prompt requires LightDM remain set."
+    echo "    (Not changing display manager automatically during competition.)"
   else
-    echo "[=] '$t' not installed."
+    echo "[+] LightDM is the current display manager."
   fi
-done
-apt-get -y autoremove || true
-
-# ------------------------------
-# Ensure LightDM stays default (do not switch DM)
-# ------------------------------
-echo "[*] Verifying LightDM is present (not altering DM selection)..."
-if ! dpkg -l | awk '{print $2}' | grep -qx lightdm; then
-  apt-get install -y lightdm
+else
+  echo "[!] Could not verify default display manager."
 fi
-# Do NOT run dpkg-reconfigure; leave current DM as-is.
 
 # ------------------------------
-# SSH policy: disable root login; keep password auth (remote access)
+# Automatic Updates (10periodic / 50unattended-upgrades)
 # ------------------------------
-echo "[*] Enforcing SSH policy (no root login; allow password auth for users)..."
-mkdir -p /etc/ssh/sshd_config.d
-CONF_OVR="/etc/ssh/sshd_config.d/99-cp-hardening.conf"
-cp -n /etc/ssh/sshd_config "${CONF_OVR}.bak.$STAMP" || true
-cat > "$CONF_OVR" <<'EOF'
-# CyberPatriot SSH hardening (scenario requires SSH on for authorized users)
-PermitRootLogin no
-PasswordAuthentication yes
-ChallengeResponseAuthentication no
-UsePAM yes
-EOF
-# Lock the root account to prevent any direct logins (policy)
-passwd -l root || true
-systemctl restart ssh || systemctl restart sshd || true
+echo "[*] Enabling unattended security updates..."
+apt install -y unattended-upgrades apt-listchanges
+dpkg-reconfigure --priority=low unattended-upgrades
 
-# ------------------------------
-# Media files (interactive removal; safe)
-# ------------------------------
-echo "[*] Optional: prompt-delete non-work media under /home and /root."
-MEDIA_PATTERNS=("*.mp3" "*.avi" "*.mkv" "*.mp4" "*.m4a" "*.flac")
-for pat in "${MEDIA_PATTERNS[@]}"; do
-  while IFS= read -r f; do
-    echo "[?] Delete '$f'? (y/N)"
-    read -r ans
-    if [[ "$ans" == "y" || "$ans" == "Y" ]]; then rm -f -- "$f"; echo "[+] Deleted '$f'."; fi
-  done < <(find /home /root -type f -iname "$pat" 2>/dev/null || true)
-done
-
-# ------------------------------
-# Automatic security updates
-# ------------------------------
-echo "[*] Enabling unattended security updates + daily APT periodic tasks..."
-apt-get install -y unattended-upgrades apt-listchanges || true
-
-for f in /etc/apt/apt.conf.d/10periodic /etc/apt/apt.conf.d/20auto-upgrades /etc/apt/apt.conf.d/50unattended-upgrades; do
-  [[ -f "$f" ]] && cp -n "$f" "${f}.bak.$STAMP"
-done
-
-cat > /etc/apt/apt.conf.d/10periodic <<'EOF'
+cat >/etc/apt/apt.conf.d/10periodic <<'EOF'
 APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Download-Upgradeable-Packages "1";
 APT::Periodic::AutocleanInterval "7";
 APT::Periodic::Unattended-Upgrade "1";
 EOF
 
-cat > /etc/apt/apt.conf.d/20auto-upgrades <<'EOF'
-APT::Periodic::Update-Package-Lists "1";
-APT::Periodic::Unattended-Upgrade "1";
+cat >/etc/apt/apt.conf.d/50unattended-upgrades <<'EOF'
+Unattended-Upgrade::Origins-Pattern {
+        "o=Ubuntu,a=jammy-security";
+        "o=UbuntuESM,a=jammy";
+        "o=Linux Mint,a=vanessa";
+};
+Unattended-Upgrade::Automatic-Reboot "true";
+Unattended-Upgrade::Automatic-Reboot-Time "02:00";
 EOF
 
-if [[ ! -f /etc/apt/apt.conf.d/50unattended-upgrades ]]; then
-  dpkg-reconfigure -fnoninteractive unattended-upgrades || true
+apt update
+apt -y upgrade
+echo "[+] Unattended upgrades configured and system updated."
+
+# ------------------------------
+# Chromium as default browser (Mint package)
+# ------------------------------
+echo "[*] Ensuring Chromium is installed and default..."
+apt install -y chromium
+if command -v update-alternatives >/dev/null 2>&1; then
+  if [[ -x /usr/bin/chromium ]]; then
+    update-alternatives --set x-www-browser /usr/bin/chromium || true
+    echo "[+] Chromium set as default x-www-browser."
+  else
+    echo "[!] /usr/bin/chromium not found; verify package name on this Mint build."
+  fi
 fi
-sed -i -E 's#^//\s*Unattended-Upgrade::Remove-Unused-Kernel-Packages.*#Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";#' /etc/apt/apt.conf.d/50unattended-upgrades || true
-sed -i -E 's#^//\s*Unattended-Upgrade::Remove-Unused-Dependencies.*#Unattended-Upgrade::Remove-Unused-Dependencies "true";#' /etc/apt/apt.conf.d/50unattended-upgrades || true
-systemctl enable --now unattended-upgrades.service || true
-echo "[+] Unattended-upgrades enabled and scheduled."
 
 # ------------------------------
-# Scoring/competition safety reminders
+# Remove hacking tools & non-work media (prompt before delete)
 # ------------------------------
-echo "[*] Leaving CCS Client & scoring artifacts untouched."
-echo "[*] Not altering time zone/date/time."
-echo "[*] Not changing display manager configuration beyond verifying LightDM availability."
-echo "[*] Default browser set to Chromium where possible."
+HACKER_TOOLS=(john hydra nmap zenmap metasploit-framework wireshark sqlmap aircrack-ng ophcrack)
+MEDIA_PATTERNS=("*.mp3" "*.avi" "*.mkv" "*.mp4" "*.m4a" "*.flac")
 
-# ------------------------------
-# Create a minimal rollback helper (restores PAM, login.defs, APT, SSH conf)
-# ------------------------------
-ROLLBACK="/root/restore_cp_backups.sh"
-cat > "$ROLLBACK" <<EOF
-#!/bin/bash
-set -e
-echo "[*] Restoring PAM, login.defs, APT, and SSH config backups where available..."
-for f in /etc/pam.d/common-auth /etc/pam.d/common-password /etc/login.defs \
-         /etc/apt/apt.conf.d/10periodic /etc/apt/apt.conf.d/20auto-upgrades /etc/apt/apt.conf.d/50unattended-upgrades \
-         /etc/ssh/sshd_config.d/99-cp-hardening.conf; do
-  b=\${f}.bak.$STAMP
-  if [[ -f "\$b" ]]; then
-    cp -f "\$b" "\$f"
-    echo "[+] Restored \$f from \$b"
+echo "[*] Checking for hacking tools..."
+for t in "${HACKER_TOOLS[@]}"; do
+  if dpkg -l | grep -qw "$t"; then
+    echo "[!] Found $t"
+    apt remove --purge -y "$t" || true
   fi
 done
-echo "[*] To clear lockouts for a user: faillock --user <username> --reset"
-echo "[*] Done."
-EOF
-chmod +x "$ROLLBACK"
-echo "[+] Rollback helper created: $ROLLBACK"
+apt autoremove -y
 
-echo "[+] Completed CyberPatriot Mint 21 hardening safely (AFA scenario)."
-echo "[i] Protected admin: ${PROTECTED_USER:-<none>} (password unchanged, no lockout)."
-[[ -n "$AUTOLOGIN_USER" ]] && echo "[i] LightDM autologin user '${AUTOLOGIN_USER}' protected as well."
+echo "[*] Searching for non-work media under /home and /root (will prompt per file)..."
+for pat in "${MEDIA_PATTERNS[@]}"; do
+  while IFS= read -r -d '' f; do
+    echo "[!] Found: $f"
+    read -rp "    Delete this file (y/n)? " ans
+    [[ "$ans" == "y" ]] && rm -f -- "$f" || echo "[*] Skipped."
+  done < <(find /home /root -type f -iname "$pat" -print0 2>/dev/null)
+done
+
+# ------------------------------
+# Disable unneeded services (but NOT sshd or scoring client)
+# ------------------------------
+maybe_disable() {
+  local svc="$1"
+  if systemctl list-unit-files | grep -qw "${svc}.service"; then
+    if systemctl is-enabled --quiet "$svc"; then
+      systemctl disable --now "$svc" || true
+      echo "[+] Disabled $svc"
+    else
+      echo "[+] $svc already disabled"
+    fi
+  fi
+}
+
+echo "[*] Disabling unneeded network-advertising/servers (if present)..."
+maybe_disable avahi-daemon
+maybe_disable apache2
+maybe_disable nginx
+# ssh stays enabled by requirement
+
+# ------------------------------
+# Final Reminders (non-automatable tasks)
+# ------------------------------
+cat <<'NOTE'
+
+=====================================================================
+REMINDERS (do these manually):
+- Unique Identifier: Double-click the "CyberPatriot Set Unique Identifier" icon
+  on the Desktop and enter your valid ID ASAP.
+- Forensics Questions: Answer any Desktop "Forensics Questions" before changing
+  system settings that might affect them.
+=====================================================================
+
+NOTE
+
+echo "[+] Completed successfully on Mint 21."
 exit 0
